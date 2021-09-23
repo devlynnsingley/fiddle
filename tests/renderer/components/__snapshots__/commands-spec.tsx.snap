@@ -10,18 +10,10 @@ exports[`Commands component renders 1`] = `
       vertical={false}
     >
       <version-chooser
-        appState={
-          Object {
-            "gistId": null,
-          }
-        }
+        appState={"default StateMock"}
       />
       <runner
-        appState={
-          Object {
-            "gistId": null,
-          }
-        }
+        appState={"default StateMock"}
       />
     </Blueprint3.ControlGroup>
     <Blueprint3.ControlGroup
@@ -29,32 +21,21 @@ exports[`Commands component renders 1`] = `
       vertical={false}
     >
       <Blueprint3.Button
+        active={true}
         icon="console"
         text="Console"
       />
       <EditorDropdown
-        appState={
-          Object {
-            "gistId": null,
-          }
-        }
+        appState={"default StateMock"}
       />
     </Blueprint3.ControlGroup>
   </div>
   <div>
     <address-bar
-      appState={
-        Object {
-          "gistId": null,
-        }
-      }
+      appState={"default StateMock"}
     />
     <action-button
-      appState={
-        Object {
-          "gistId": null,
-        }
-      }
+      appState={"default StateMock"}
     />
   </div>
 </div>

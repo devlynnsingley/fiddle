@@ -1,5 +1,6 @@
 import { ChildProcess, spawn } from 'child_process';
 import * as path from 'path';
+import isRunning from 'is-running';
 
 import {
   EditorValues,
@@ -201,10 +202,17 @@ export class Runner {
    * @returns {boolean} true if runner is now idle
    * @memberof Runner
    */
-  public stop(): boolean {
+  public stop(): void {
     this.appState.isRunning = !!this.child && !this.child.kill();
-    const isIdle = !this.appState.isRunning;
-    return isIdle;
+
+    // If the child process is still alive 1 second after we've
+    // attempted to kill it by normal means, kill it forcefully.
+    setTimeout(() => {
+      const pid = this.child?.pid;
+      if (pid && isRunning(pid)) {
+        this.child?.kill('SIGKILL');
+      }
+    }, 1000);
   }
 
   /**
@@ -315,22 +323,12 @@ export class Runner {
     }
   }
 
-  /**
-   * Execute Electron.
-   *
-   * @param {string} dir
-   * @param {string} version
-   * @returns {Promise<void>}
-   * @memberof Runner
-   */
-  public async execute(dir: string): Promise<RunResult> {
-    const { currentElectronVersion, pushOutput } = this.appState;
-    const { version, localPath } = currentElectronVersion;
-    const binaryPath = getElectronBinaryPath(version, localPath);
-    console.log(`Runner: Binary ${binaryPath} ready, launching`);
+  private buildChildEnvVars(): { [x: string]: string | undefined } {
+    const { isEnablingElectronLogging, environmentVariables } = this.appState;
 
     const env = { ...process.env };
-    if (this.appState.isEnablingElectronLogging) {
+
+    if (isEnablingElectronLogging) {
       env.ELECTRON_ENABLE_LOGGING = 'true';
       env.ELECTRON_DEBUG_NOTIFICATIONS = 'true';
       env.ELECTRON_ENABLE_STACK_DUMPING = 'true';
@@ -340,8 +338,38 @@ export class Runner {
       delete env.ELECTRON_ENABLE_STACK_DUMPING;
     }
 
+    for (const v of environmentVariables) {
+      const [key, value] = v.split('=');
+      env[key] = value;
+    }
+
+    return env;
+  }
+
+  /**
+   * Execute Electron.
+   *
+   * @param {string} dir
+   * @param {string} version
+   * @returns {Promise<void>}
+   * @memberof Runner
+   */
+  public async execute(dir: string): Promise<RunResult> {
+    const {
+      currentElectronVersion,
+      flushOutput,
+      pushOutput,
+      executionFlags,
+    } = this.appState;
+
+    const { version, localPath } = currentElectronVersion;
+    const binaryPath = getElectronBinaryPath(version, localPath);
+    console.log(`Runner: Binary ${binaryPath} ready, launching`);
+
+    const env = this.buildChildEnvVars();
+
     // Add user-specified cli flags if any have been set.
-    const options = [dir, '--inspect'].concat(this.appState.executionFlags);
+    const options = [dir, '--inspect'].concat(executionFlags);
 
     return new Promise((resolve, _reject) => {
       this.child = spawn(binaryPath, options, { cwd: dir, env });
@@ -354,7 +382,9 @@ export class Runner {
       this.child.stderr!.on('data', (data) =>
         pushOutput(data, { bypassBuffer: false }),
       );
-      this.child.on('close', async (code) => {
+      this.child.on('close', async (code, signal) => {
+        flushOutput();
+
         this.appState.isRunning = false;
         this.child = null;
 
@@ -363,14 +393,11 @@ export class Runner {
         await this.deleteUserData();
 
         if (typeof code !== 'number') {
-          pushOutput('Electron exited.');
+          pushOutput(`Electron exited with signal ${signal}.`);
           resolve(RunResult.INVALID);
-        } else if (!code) {
-          pushOutput(`Electron exited with code ${code}.`);
-          resolve(RunResult.SUCCESS);
         } else {
           pushOutput(`Electron exited with code ${code}.`);
-          resolve(RunResult.FAILURE);
+          resolve(!code ? RunResult.SUCCESS : RunResult.FAILURE);
         }
       });
     });

@@ -88,6 +88,7 @@ exports[`ElectronSettings component renders 1`] = `
         transitionDuration={100}
       >
         <Blueprint3.Checkbox
+          checked={false}
           id="showObsoleteVersions"
           inline={true}
           label="Obsolete"
@@ -262,22 +263,31 @@ exports[`ElectronSettings component renders 1`] = `
           <td>
             <span>
               <Blueprint3.Icon
-                icon="box"
+                icon="cloud"
               />
                
-              Downloaded
+              Not downloaded
             </span>
           </td>
           <td
             className="action"
           >
-            <Blueprint3.Button
-              fill={true}
-              icon="trash"
-              onClick={[Function]}
-              small={true}
-              text="Delete"
-            />
+            <Blueprint3.Tooltip
+              content="Can't remove currently active Electron version (2.0.1)"
+              hoverCloseDelay={0}
+              hoverOpenDelay={100}
+              intent="primary"
+              minimal={false}
+              position="auto"
+              transitionDuration={100}
+            >
+              <Blueprint3.AnchorButton
+                className="disabled-version"
+                disabled={true}
+                icon="cloud-download"
+                text="Download"
+              />
+            </Blueprint3.Tooltip>
           </td>
         </tr>
         <tr
@@ -299,11 +309,12 @@ exports[`ElectronSettings component renders 1`] = `
             className="action"
           >
             <Blueprint3.Button
+              disabled={true}
               fill={true}
-              icon="trash"
-              onClick={[Function]}
+              icon="cloud-download"
+              loading={true}
               small={true}
-              text="Delete"
+              text="Downloading"
             />
           </td>
         </tr>
@@ -316,23 +327,21 @@ exports[`ElectronSettings component renders 1`] = `
           <td>
             <span>
               <Blueprint3.Icon
-                icon="cloud"
+                icon="box"
               />
                
-              Not downloaded
+              Downloaded
             </span>
           </td>
           <td
             className="action"
           >
             <Blueprint3.Button
-              disabled={false}
               fill={true}
-              icon="cloud-download"
-              loading={false}
+              icon="trash"
               onClick={[Function]}
               small={true}
-              text="Download"
+              text="Delete"
             />
           </td>
         </tr>

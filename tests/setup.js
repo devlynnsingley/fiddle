@@ -1,6 +1,6 @@
 const { configure } = require('enzyme');
 const Adapter = require('enzyme-adapter-react-16');
-const { ElectronFiddleMock } = require('./mocks/electron-fiddle');
+const { ElectronFiddleMock } = require('./mocks/mocks');
 const { createSerializer } = require('enzyme-to-json');
 
 configure({ adapter: new Adapter() });
@@ -12,6 +12,7 @@ if (!process.env.hasOwnProperty('FIDDLE_VERBOSE_TESTS')) {
   jest.spyOn(global.console, 'info').mockImplementation(() => jest.fn());
   jest.spyOn(global.console, 'log').mockImplementation(() => jest.fn());
   jest.spyOn(global.console, 'warn').mockImplementation(() => jest.fn());
+  jest.spyOn(global.console, 'debug').mockImplementation(() => jest.fn());
 }
 jest.mock('electron', () => require('./mocks/electron'));
 jest.mock('fs-extra');

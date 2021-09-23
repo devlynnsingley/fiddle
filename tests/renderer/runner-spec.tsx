@@ -5,11 +5,7 @@ import * as semver from 'semver';
 import { IpcEvents } from '../../src/ipc-events';
 import { getIsDownloaded } from '../../src/renderer/binary';
 import { ipcRendererManager } from '../../src/renderer/ipc';
-import {
-  RunResult,
-  RunnableVersion,
-  DefaultEditorId,
-} from '../../src/interfaces';
+import { MAIN_JS, RunResult, RunnableVersion } from '../../src/interfaces';
 import {
   findModulesInEditors,
   getIsPackageManagerInstalled,
@@ -17,11 +13,13 @@ import {
   packageRun,
 } from '../../src/renderer/npm';
 import { ForgeCommands, Runner } from '../../src/renderer/runner';
-import { waitFor } from '../../src/utils/wait-for';
-import { AppState } from '../../src/renderer/state';
-import { MockChildProcess } from '../mocks/child-process';
-import { ElectronFiddleMock } from '../mocks/electron-fiddle';
-import { MockVersions } from '../mocks/electron-versions';
+import { waitFor } from '../utils';
+import {
+  ChildProcessMock,
+  FileManagerMock,
+  StateMock,
+  VersionsMock,
+} from '../mocks/mocks';
 
 jest.mock('../../src/renderer/npm');
 jest.mock('../../src/renderer/file-manager');
@@ -34,43 +32,26 @@ jest.mock('child_process');
 jest.mock('path');
 
 describe('Runner component', () => {
-  let mockChild: MockChildProcess;
-  let store: any;
+  let mockChild: ChildProcessMock;
+  let store: StateMock;
   let instance: Runner;
+  let fileManager: FileManagerMock;
   let mockVersions: Record<string, RunnableVersion>;
   let mockVersionsArray: RunnableVersion[];
 
   beforeEach(() => {
-    ({ mockVersions, mockVersionsArray } = new MockVersions());
+    ({ mockVersions, mockVersionsArray } = new VersionsMock());
+    ({ fileManager, state: store } = (window as any).ElectronFiddle.app);
+    store.initVersions('2.0.2', { ...mockVersions });
+    store.getName.mockResolvedValue('test-app-name');
 
-    mockChild = new MockChildProcess();
+    mockChild = new ChildProcessMock();
     ipcRendererManager.removeAllListeners();
 
     (getIsPackageManagerInstalled as jest.Mock).mockReturnValue(true);
-
-    store = {
-      version: '2.0.2',
-      versions: mockVersions,
-      downloadVersion: jest.fn(),
-      removeVersion: jest.fn(),
-      pushOutput: jest.fn(),
-      clearConsole: jest.fn(),
-      pushError: jest.fn(),
-      packageManager: 'npm',
-      get currentElectronVersion() {
-        return mockVersions['2.0.2'];
-      },
-      getName: async () => 'test-app-name',
-      setVersion: (version: string) => {
-        store.version = version;
-        return true;
-      },
-    };
-
-    (window as any).ElectronFiddle = new ElectronFiddleMock();
     (getIsDownloaded as jest.Mock).mockReturnValue(true);
 
-    instance = new Runner(store as AppState);
+    instance = new Runner(store as any);
   });
 
   describe('run()', () => {
@@ -90,9 +71,7 @@ describe('Runner component', () => {
       expect(result).toBe(RunResult.SUCCESS);
       expect(store.isRunning).toBe(false);
       expect(getIsDownloaded).toHaveBeenCalled();
-      expect(
-        window.ElectronFiddle.app.fileManager.saveToTemp,
-      ).toHaveBeenCalled();
+      expect(fileManager.saveToTemp).toHaveBeenCalled();
       expect(installModules).toHaveBeenCalled();
     });
 
@@ -117,9 +96,7 @@ describe('Runner component', () => {
       expect(result).toBe(RunResult.SUCCESS);
       expect(store.isRunning).toBe(false);
       expect(getIsDownloaded).toHaveBeenCalled();
-      expect(
-        window.ElectronFiddle.app.fileManager.saveToTemp,
-      ).toHaveBeenCalled();
+      expect(fileManager.saveToTemp).toHaveBeenCalled();
       expect(installModules).toHaveBeenCalled();
     });
 
@@ -143,6 +120,7 @@ describe('Runner component', () => {
       expect(result).toBe(RunResult.SUCCESS);
       expect(store.isRunning).toBe(false);
       expect(store.pushOutput).toHaveBeenCalledTimes(8);
+      expect(store.flushOutput).toHaveBeenCalledTimes(1);
       expect(store.pushOutput).toHaveBeenLastCalledWith(
         'Electron exited with code 0.',
       );
@@ -164,6 +142,7 @@ describe('Runner component', () => {
 
       expect(result).toBe(RunResult.FAILURE);
       expect(store.isRunning).toBe(false);
+      expect(store.flushOutput).toHaveBeenCalledTimes(1);
       expect(store.pushOutput).toHaveBeenLastCalledWith(
         `Electron exited with code ${ARBITRARY_FAIL_CODE}.`,
       );
@@ -178,37 +157,40 @@ describe('Runner component', () => {
       await waitFor(() => store.isRunning);
       expect(store.isRunning).toBe(true);
 
+      const signal = 'SIGTERM';
+
       // mock child process gives output,
       // then exits without an explicit exitCode
       mockChild.stdout.emit('data', 'hi');
       mockChild.stderr.emit('data', 'hi');
-      mockChild.emit('close');
+      mockChild.emit('close', null, signal);
       const result = await runPromise;
 
       expect(result).toBe(RunResult.INVALID);
       expect(store.isRunning).toBe(false);
+      expect(store.flushOutput).toHaveBeenCalledTimes(1);
       expect(store.pushOutput).toHaveBeenCalledTimes(8);
-      expect(store.pushOutput).toHaveBeenLastCalledWith('Electron exited.');
+      expect(store.pushOutput).toHaveBeenLastCalledWith(
+        `Electron exited with signal ${signal}.`,
+      );
     });
 
-    it('cleans the app data dir after a run', async (done) => {
+    it('cleans the app data dir after a run', async () => {
       // get run() out of the way
       (spawn as any).mockReturnValueOnce(mockChild);
       setTimeout(() => mockChild.emit('close', 0));
       const result = await instance.run();
 
       expect(result).toBe(RunResult.SUCCESS);
-      process.nextTick(() => {
-        const { cleanup } = window.ElectronFiddle.app.fileManager;
-        expect(cleanup).toHaveBeenCalledTimes(2);
-        expect(cleanup).toHaveBeenLastCalledWith(
-          path.join(`/test-path/test-app-name`),
-        );
-        done();
-      });
+      await process.nextTick;
+      const { cleanup } = fileManager;
+      expect(cleanup).toHaveBeenCalledTimes(2);
+      expect(cleanup).toHaveBeenLastCalledWith(
+        path.join(`/test-path/test-app-name`),
+      );
     });
 
-    it('does not clean the app data dir after a run if configured', async (done) => {
+    it('does not clean the app data dir after a run if configured', async () => {
       (instance as any).appState.isKeepingUserDataDirs = true;
 
       // get run() out of the way
@@ -217,11 +199,9 @@ describe('Runner component', () => {
       const result = await instance.run();
 
       expect(result).toBe(RunResult.SUCCESS);
-      process.nextTick(() => {
-        const { cleanup } = window.ElectronFiddle.app.fileManager;
-        expect(cleanup).toHaveBeenCalledTimes(1);
-        done();
-      });
+      await process.nextTick;
+      const { cleanup } = fileManager;
+      expect(cleanup).toHaveBeenCalledTimes(1);
     });
 
     it('automatically cleans the console when enabled', async () => {
@@ -244,8 +224,7 @@ describe('Runner component', () => {
     });
 
     it('does not run if writing files fails', async () => {
-      (window.ElectronFiddle.app.fileManager
-        .saveToTemp as jest.Mock).mockRejectedValueOnce('bwap bwap');
+      (fileManager.saveToTemp as jest.Mock).mockRejectedValueOnce('bwap bwap');
 
       expect(await instance.run()).toBe(RunResult.INVALID);
     });
@@ -281,15 +260,14 @@ describe('Runner component', () => {
       expect(store.isRunning).toBe(true);
 
       // call stop and wait for run() to resolve
-      const stopped = instance.stop();
+      instance.stop();
       const runResult = await runPromise;
 
-      expect(stopped).toBe(true);
       expect(runResult).toBe(RunResult.INVALID);
       expect(store.isRunning).toBe(false);
     });
 
-    it('returns failure if killing child process fails', async () => {
+    it('fails if killing child process fails', async () => {
       (findModulesInEditors as any).mockReturnValueOnce(['fake-module']);
       (spawn as any).mockReturnValueOnce(mockChild);
       mockChild.kill.mockReturnValueOnce(false);
@@ -299,14 +277,8 @@ describe('Runner component', () => {
       await waitFor(() => store.isRunning);
       expect(store.isRunning).toBe(true);
 
-      const stopped = instance.stop();
-      expect(stopped).toBe(false);
-    });
-
-    it('does nothing if called when idle', () => {
-      const stopped = instance.stop();
-
-      expect(stopped).toBe(true);
+      instance.stop();
+      expect(store.isRunning).toBe(true);
     });
   });
 
@@ -462,40 +434,20 @@ describe('Runner component', () => {
   });
 
   describe('installModulesForEditor()', () => {
-    it('does not attempt installation if npm is not installed', async () => {
-      (getIsPackageManagerInstalled as jest.Mock).mockReturnValueOnce(false);
+    it.each([
+      ['does not attempt installation if npm is not installed', false, 0],
+      ['does attempt installation if npm is installed', true, 1],
+    ])('%s', async (_: unknown, haveNpm: boolean, numCalls: number) => {
       (findModulesInEditors as jest.Mock).mockReturnValueOnce(['fake-module']);
+      (getIsPackageManagerInstalled as jest.Mock).mockReturnValue(haveNpm);
 
-      await instance.installModulesForEditor(
-        {
-          [DefaultEditorId.html]: '',
-          [DefaultEditorId.main]: `const a = require('say')`,
-          [DefaultEditorId.renderer]: '',
-          [DefaultEditorId.preload]: '',
-          [DefaultEditorId.css]: '',
-        },
-        { dir: '/fake/path', packageManager: 'npm' },
-      );
+      const editorValues = { [MAIN_JS]: "const a = require('say');" } as const;
+      await instance.installModulesForEditor(editorValues, {
+        dir: '/fake/path',
+        packageManager: 'npm',
+      });
 
-      expect(installModules).toHaveBeenCalledTimes(0);
-    });
-
-    it('does attempt installation if npm is installed', async () => {
-      (getIsPackageManagerInstalled as jest.Mock).mockReturnValueOnce(true);
-      (findModulesInEditors as jest.Mock).mockReturnValueOnce(['fake-module']);
-
-      await instance.installModulesForEditor(
-        {
-          [DefaultEditorId.html]: '',
-          [DefaultEditorId.main]: `const a = require('say')`,
-          [DefaultEditorId.renderer]: '',
-          [DefaultEditorId.preload]: '',
-          [DefaultEditorId.css]: '',
-        },
-        { dir: '/fake/path', packageManager: 'npm' },
-      );
-
-      expect(installModules).toHaveBeenCalledTimes(1);
+      expect(installModules).toHaveBeenCalledTimes(numCalls);
     });
   });
 });

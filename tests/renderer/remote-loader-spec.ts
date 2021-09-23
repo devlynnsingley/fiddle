@@ -1,14 +1,14 @@
-import { observable } from 'mobx';
 import {
   DefaultEditorId,
   ElectronReleaseChannel,
-  GenericDialogType,
+  VersionSource,
+  VersionState,
 } from '../../src/interfaces';
 import { ipcRendererManager } from '../../src/renderer/ipc';
 import { RemoteLoader } from '../../src/renderer/remote-loader';
 import { getOctokit } from '../../src/utils/octokit';
-import { ElectronFiddleMock } from '../mocks/electron-fiddle';
-import { mockFetchOnce } from '../utils';
+import { AppMock, StateMock } from '../mocks/mocks';
+import { FetchMock } from '../utils';
 
 jest.mock('../../src/utils/octokit');
 
@@ -71,35 +71,21 @@ const mockGetRepos = {
   }),
 };
 
-class MockStore {
-  @observable public isGenericDialogShowing = false;
-  public setGenericDialogOptions = jest.fn();
-  public toggleGenericDialog = jest.fn();
-  public versions = {
-    '4.0.0': {
-      version: '4.0.0',
-    },
-    '4.0.0-beta': {
-      version: '4.0.0-beta',
-    },
-  };
-  public channelsToShow = [ElectronReleaseChannel.stable];
-  public setVersion = jest.fn();
-  public hasVersion = (version: string) => !!this.versions[version];
-}
-
 describe('RemoteLoader', () => {
   let instance: RemoteLoader;
-  let store: any;
+  let app: AppMock;
+  let store: StateMock;
 
   beforeEach(() => {
-    window.ElectronFiddle = new ElectronFiddleMock() as any;
+    ({ app } = (window as any).ElectronFiddle);
+    ({ state: store } = app);
     ipcRendererManager.send = jest.fn();
-
-    store = new MockStore() as any;
-    store.customMosaics = [];
-
-    instance = new RemoteLoader(store);
+    store.channelsToShow = [ElectronReleaseChannel.stable];
+    store.initVersions('4.0.0', {
+      '4.0.0': { version: '4.0.0' },
+      '4.0.0-beta': { version: '4.0.0-beta' },
+    } as any);
+    instance = new RemoteLoader(store as any);
   });
 
   afterEach(() => {
@@ -108,7 +94,6 @@ describe('RemoteLoader', () => {
 
   describe('fetchGistAndLoad()', () => {
     it('loads a fiddle', async () => {
-      const { app } = window.ElectronFiddle;
       (getOctokit as jest.Mock).mockReturnValue({ gists: mockGetGists });
       store.gistId = 'abcdtestid';
 
@@ -130,8 +115,6 @@ describe('RemoteLoader', () => {
     });
 
     it('loads a fiddle with a custom editor', async () => {
-      const { app } = window.ElectronFiddle;
-
       store.gistId = 'customtestid';
 
       const file = 'file.js';
@@ -147,7 +130,6 @@ describe('RemoteLoader', () => {
       const result = await instance.fetchGistAndLoad('customtestid');
 
       expect(result).toBe(true);
-      expect(store.customMosaics).toEqual([file]);
       expect(app.replaceFiddle).toBeCalledWith(
         {
           [DefaultEditorId.html]: mockGistFiles[DefaultEditorId.html].content,
@@ -178,35 +160,30 @@ describe('RemoteLoader', () => {
   });
 
   describe('fetchExampleAndLoad()', () => {
+    let fetchMock: FetchMock;
+
     beforeEach(() => {
       instance.setElectronVersionWithRef = jest.fn().mockReturnValueOnce(true);
-
-      mockFetchOnce(DefaultEditorId.main);
-      mockFetchOnce(DefaultEditorId.renderer);
-      mockFetchOnce(DefaultEditorId.html);
-      mockFetchOnce(DefaultEditorId.css);
-      mockFetchOnce(DefaultEditorId.preload);
+      fetchMock = new FetchMock();
+      for (const { name, download_url } of mockRepos) {
+        fetchMock.add(download_url, name);
+      }
     });
 
     it('loads an Electron example', async () => {
-      (getOctokit as jest.Mock).mockReturnValue({ repos: mockGetRepos });
+      (getOctokit as jest.Mock).mockResolvedValue({ repos: mockGetRepos });
 
       await instance.fetchExampleAndLoad('4.0.0', 'test/path');
 
-      const { calls } = (window.ElectronFiddle.app
-        .replaceFiddle as jest.Mock).mock;
-
-      expect(calls).toHaveLength(1);
-      expect(calls[0]).toMatchObject(
-        expect.arrayContaining([
-          expect.objectContaining({
-            [DefaultEditorId.html]: DefaultEditorId.html,
-            [DefaultEditorId.main]: DefaultEditorId.main,
-            [DefaultEditorId.renderer]: DefaultEditorId.renderer,
-            [DefaultEditorId.css]: DefaultEditorId.css,
-            [DefaultEditorId.preload]: DefaultEditorId.preload,
-          }),
-        ]),
+      expect(app.replaceFiddle).toHaveBeenCalledWith(
+        expect.objectContaining({
+          [DefaultEditorId.html]: DefaultEditorId.html,
+          [DefaultEditorId.main]: DefaultEditorId.main,
+          [DefaultEditorId.renderer]: DefaultEditorId.renderer,
+          [DefaultEditorId.css]: DefaultEditorId.css,
+          [DefaultEditorId.preload]: DefaultEditorId.preload,
+        }),
+        expect.anything(),
       );
     });
 
@@ -224,6 +201,7 @@ describe('RemoteLoader', () => {
     });
 
     it('handles incorrect results', async () => {
+      store.showErrorDialog = jest.fn().mockResolvedValueOnce(true);
       (getOctokit as jest.Mock).mockReturnValue({
         repos: {
           getContents: async () => ({
@@ -234,14 +212,15 @@ describe('RemoteLoader', () => {
 
       const result = await instance.fetchExampleAndLoad('4.0.0', 'test/path');
       expect(result).toBe(false);
-      expect(store.setGenericDialogOptions.mock.calls[0][0].label).toEqual(
-        'Loading the fiddle failed: Error: The example Fiddle tried to launch is not a valid Electron example',
+      expect(store.showErrorDialog).toHaveBeenCalledWith(
+        expect.stringMatching(/not a valid/i),
       );
     });
   });
 
   describe('setElectronVersionFromRef()', () => {
     it('sets version from ref if release channel enabled', async () => {
+      store.showConfirmDialog = jest.fn().mockResolvedValueOnce(true);
       instance.getPackageVersionFromRef = jest
         .fn()
         .mockReturnValueOnce('4.0.0');
@@ -262,24 +241,27 @@ describe('RemoteLoader', () => {
       expect(store.channelsToShow).toContain(ElectronReleaseChannel.beta);
     });
 
-    it('does not load unsupported versions of Fiddle', async () => {
+    it('tries to download missing versions of Electron', async () => {
+      const version = '5.0.0';
       instance.getPackageVersionFromRef = jest
         .fn()
-        .mockReturnValueOnce('5.0.0');
+        .mockReturnValueOnce(version);
 
-      const result = await instance.setElectronVersionWithRef('5.0.0');
-      expect(result).toBe(false);
-      expect(store.setGenericDialogOptions).toBeCalledWith({
-        type: GenericDialogType.warning,
-        label:
-          'Loading the fiddle failed: Error: Version of Electron in example not supported',
-        cancel: undefined,
-      });
+      const result = await instance.setElectronVersionWithRef(version);
+      expect(result).toBe(true);
+      expect(store.addNewVersions).toBeCalledWith([
+        {
+          source: VersionSource.remote,
+          state: VersionState.unknown,
+          version,
+        },
+      ]);
+      expect(store.setVersion).toBeCalledWith(version);
     });
   });
 
   describe('getPackageFromRef()', () => {
-    it('gets electron version from package.json', async () => {
+    it('gets Electron version from package.json', async () => {
       const versionString = JSON.stringify({ version: '4.0.0' });
       const content = Buffer.from(versionString).toString('base64');
       const mockGetPackageJson = {
@@ -295,27 +277,20 @@ describe('RemoteLoader', () => {
     });
   });
 
-  describe('verifyRemoteLoad()', () => {
-    it('asks the user if they want to load remote content', (done) => {
-      instance.verifyRemoteLoad('test').then(done);
-      expect(store.isGenericDialogShowing).toBe(true);
-      store.isGenericDialogShowing = false;
-    });
-  });
-
   describe('verifyReleaseChannelEnabled', () => {
-    it('asks the user if they want to enable a release channel', (done) => {
-      instance
-        .verifyReleaseChannelEnabled(ElectronReleaseChannel.beta)
-        .then(done);
-      expect(store.isGenericDialogShowing).toBe(true);
-      store.isGenericDialogShowing = false;
+    it('asks the user if they want to enable a release channel', async () => {
+      store.showConfirmDialog = jest.fn().mockResolvedValueOnce(true);
+      await instance.verifyReleaseChannelEnabled(ElectronReleaseChannel.beta);
+      expect(store.showConfirmDialog).toHaveBeenCalledWith({
+        label: expect.stringMatching(/enable the release channel/i),
+        ok: 'Enable',
+      });
     });
   });
 
   describe('loadFiddleFromElectronExample()', () => {
     it('loads the example with confirmation', async () => {
-      instance.verifyRemoteLoad = jest.fn().mockReturnValue(true);
+      store.showConfirmDialog = jest.fn().mockResolvedValueOnce(true);
       instance.verifyReleaseChannelEnabled = jest.fn().mockReturnValue(true);
       instance.fetchExampleAndLoad = jest.fn();
       await instance.loadFiddleFromElectronExample(
@@ -323,17 +298,18 @@ describe('RemoteLoader', () => {
         { path: 'test/path', ref: '4.0.0' },
       );
 
-      expect(instance.verifyRemoteLoad).toHaveBeenCalledWith<any>(
-        `'test/path' example from the Electron docs for version 4.0.0`,
-      );
-      expect(instance.fetchExampleAndLoad).toHaveBeenCalledWith<any>(
+      expect(store.showConfirmDialog).toHaveBeenCalledWith({
+        label: expect.stringMatching(/for version 4.0.0/i),
+        ok: 'Load',
+      });
+      expect(instance.fetchExampleAndLoad).toHaveBeenCalledWith(
         '4.0.0',
         'test/path',
       );
     });
 
     it('does not load the example without confirmation', async () => {
-      instance.verifyRemoteLoad = jest.fn().mockReturnValue(false);
+      store.showConfirmDialog = jest.fn().mockResolvedValueOnce(false);
       instance.verifyReleaseChannelEnabled = jest.fn();
       instance.fetchExampleAndLoad = jest.fn();
       await instance.loadFiddleFromElectronExample(
@@ -341,37 +317,31 @@ describe('RemoteLoader', () => {
         { path: 'test/path', ref: '4.0.0' },
       );
 
-      expect(instance.verifyRemoteLoad).toHaveBeenCalled();
+      expect(store.showConfirmDialog).toHaveBeenCalled();
       expect(instance.fetchExampleAndLoad).toHaveBeenCalledTimes(0);
     });
   });
 
   describe('loadFiddleFromGist()', () => {
     it('loads the example with confirmation', async () => {
-      instance.verifyRemoteLoad = jest.fn().mockReturnValue(true);
+      store.showConfirmDialog = jest.fn().mockResolvedValueOnce(true);
       instance.fetchGistAndLoad = jest.fn();
       await instance.loadFiddleFromGist({}, { id: 'gist' });
 
-      expect(instance.verifyRemoteLoad).toHaveBeenCalledWith<any>('gist');
-      expect(instance.fetchGistAndLoad).toHaveBeenCalledWith<any>('gist');
-    });
-
-    it('loads the example with confirmation', async () => {
-      instance.verifyRemoteLoad = jest.fn().mockReturnValue(true);
-      instance.fetchGistAndLoad = jest.fn();
-      await instance.loadFiddleFromGist({}, { id: 'gist' });
-
-      expect(instance.verifyRemoteLoad).toHaveBeenCalledWith<any>('gist');
-      expect(instance.fetchGistAndLoad).toHaveBeenCalledWith<any>('gist');
+      expect(instance.fetchGistAndLoad).toHaveBeenCalledWith('gist');
+      expect(store.showConfirmDialog).toHaveBeenCalledWith({
+        label: expect.stringMatching(/are you sure/i),
+        ok: 'Load',
+      });
     });
 
     it('does not load the example without confirmation', async () => {
-      instance.verifyRemoteLoad = jest.fn().mockReturnValue(false);
+      store.showConfirmDialog = jest.fn().mockResolvedValueOnce(false);
       instance.fetchGistAndLoad = jest.fn();
       await instance.loadFiddleFromGist({}, { id: 'gist' });
 
-      expect(instance.verifyRemoteLoad).toHaveBeenCalled();
-      expect(instance.fetchGistAndLoad).toHaveBeenCalledTimes(0);
+      expect(instance.fetchGistAndLoad).not.toHaveBeenCalled();
+      expect(store.showConfirmDialog).toHaveBeenCalled();
     });
   });
 });

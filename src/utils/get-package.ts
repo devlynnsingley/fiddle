@@ -1,4 +1,5 @@
-import { DefaultEditorId, EditorValues } from '../interfaces';
+import * as path from 'path';
+import { EditorValues, MAIN_JS } from '../interfaces';
 import { findModulesInEditors } from '../renderer/npm';
 import { AppState } from '../renderer/state';
 import { getUsername } from './get-username';
@@ -13,6 +14,11 @@ export const DEFAULT_OPTIONS = {
   includeElectron: true,
   includeDependencies: true,
 };
+
+export function getForgeVersion(): string {
+  const fiddlePackageJSON = require(path.join(__dirname, '../../package.json'));
+  return fiddlePackageJSON.devDependencies['@electron-forge/cli'];
+}
 
 /**
  * Returns the package.json for the current Fiddle
@@ -53,7 +59,7 @@ export async function getPackageJson(
       productName: name,
       description: 'My Electron application description',
       keywords: [],
-      main: `./${DefaultEditorId.main}`,
+      main: `./${MAIN_JS}`,
       version: '1.0.0',
       author: getUsername(),
       scripts: {

@@ -3,31 +3,31 @@ import { Mosaic, MosaicNode, MosaicParent } from 'react-mosaic-component';
 
 import { AppState } from '../state';
 import { Editors } from './editors';
-import { Output } from './output';
+import { Outputs } from './outputs';
 
 interface WrapperProps {
   appState: AppState;
 }
 
 interface WrapperState {
-  mosaicArrangement: MosaicNode<WrapperMosaicId>;
+  mosaic: MosaicNode<WrapperEditorId>;
 }
 
-export type WrapperMosaicId = 'output' | 'editors';
+export type WrapperEditorId = 'output' | 'editors';
 
 export class OutputEditorsWrapper extends React.Component<
   WrapperProps,
   WrapperState
 > {
   private MOSAIC_ELEMENTS = {
-    output: <Output appState={this.props.appState} />,
+    output: <Outputs appState={this.props.appState} />,
     editors: <Editors appState={this.props.appState} />,
   };
 
   constructor(props: any) {
     super(props);
     this.state = {
-      mosaicArrangement: {
+      mosaic: {
         direction: 'column',
         first: 'output',
         second: 'editors',
@@ -39,22 +39,22 @@ export class OutputEditorsWrapper extends React.Component<
   public render() {
     return (
       <>
-        <Mosaic<WrapperMosaicId>
+        <Mosaic<WrapperEditorId>
           renderTile={(id: string) => this.MOSAIC_ELEMENTS[id]}
           resize={{ minimumPaneSizePercentage: 0 }}
-          value={this.state.mosaicArrangement}
+          value={this.state.mosaic}
           onChange={this.onChange}
         />
       </>
     );
   }
 
-  private onChange = (rootNode: MosaicParent<WrapperMosaicId>) => {
+  private onChange = (rootNode: MosaicParent<WrapperEditorId>) => {
     const isConsoleShowing = rootNode.splitPercentage !== 0;
 
     if (isConsoleShowing !== this.props.appState.isConsoleShowing) {
       this.props.appState.isConsoleShowing = isConsoleShowing;
     }
-    this.setState({ mosaicArrangement: rootNode });
+    this.setState({ mosaic: rootNode });
   };
 }

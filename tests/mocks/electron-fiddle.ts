@@ -1,11 +1,10 @@
-import { AppMock } from './app';
-import { EditorsMock } from './editors';
+import { AppMock, MonacoMock } from './mocks';
 
 export class ElectronFiddleMock {
   public app = new AppMock();
-  public editors = new EditorsMock();
   public appPaths = {
     userData: '/fake/path',
     home: `~`,
   };
+  public monaco = new MonacoMock();
 }

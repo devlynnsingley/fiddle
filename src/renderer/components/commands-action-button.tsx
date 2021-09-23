@@ -10,19 +10,17 @@ import {
 } from '@blueprintjs/core';
 import { observer } from 'mobx-react';
 import * as React from 'react';
-import * as path from 'path';
 
 import { when } from 'mobx';
 import {
   DEFAULT_EDITORS,
   EditorValues,
-  GenericDialogType,
   GistActionState,
   GistActionType,
 } from '../../interfaces';
 import { IpcEvents } from '../../ipc-events';
 import { getOctokit } from '../../utils/octokit';
-import { EMPTY_EDITOR_CONTENT } from '../constants';
+import { getEmptyContent } from '../../utils/editor-utils';
 import { ipcRendererManager } from '../ipc';
 import { AppState } from '../state';
 
@@ -103,34 +101,21 @@ export class GistActionButton extends React.Component<
     }
   }
 
-  public async getFiddleDescriptionFromUser(): Promise<string | null> {
-    const { appState } = this.props;
-
-    // Reset potentially non-null last description.
-    appState.genericDialogLastInput = null;
-
-    appState.setGenericDialogOptions({
-      type: GenericDialogType.confirm,
+  private getFiddleDescriptionFromUser(): Promise<string | undefined> {
+    const placeholder = 'Electron Fiddle Gist' as const;
+    return this.props.appState.showInputDialog({
+      defaultInput: placeholder,
       label: 'Please provide a brief description for your Fiddle Gist',
-      wantsInput: true,
       ok: 'Publish',
-      cancel: 'Cancel',
-      placeholder: 'Electron Fiddle Gist',
+      placeholder,
     });
-    appState.isGenericDialogShowing = true;
-    await when(() => !appState.isGenericDialogShowing);
-
-    const cancelled = !appState.genericDialogLastResult;
-    return cancelled
-      ? null
-      : appState.genericDialogLastInput ?? 'Electron Fiddle Gist';
   }
 
   private async publishGist(description: string) {
     const { appState } = this.props;
 
-    const octo = await getOctokit(this.props.appState);
-    const { gitHubPublishAsPublic } = this.props.appState;
+    const octo = await getOctokit(appState);
+    const { gitHubPublishAsPublic } = appState;
     const options = { includeDependencies: true, includeElectron: true };
     const values = await window.ElectronFiddle.app.getEditorValues(options);
 
@@ -173,10 +158,9 @@ export class GistActionButton extends React.Component<
 
     if (description) {
       await this.publishGist(description);
-      appState.isUnsaved = false;
+      appState.editorMosaic.isEdited = false;
     }
 
-    appState.genericDialogLastInput = null;
     appState.activeGistAction = GistActionState.none;
   }
 
@@ -197,7 +181,7 @@ export class GistActionButton extends React.Component<
         files: this.gistFilesList(values) as any,
       });
 
-      appState.isUnsaved = false;
+      appState.editorMosaic.isEdited = false;
       console.log('Updating: Updating done', { gist });
       this.renderToast({ message: 'Successfully updated gist!' });
     } catch (error) {
@@ -231,7 +215,7 @@ export class GistActionButton extends React.Component<
         gist_id: appState.gistId!,
       });
 
-      appState.isUnsaved = true;
+      appState.editorMosaic.isEdited = true;
       console.log('Deleting: Deleting done', { gist });
       this.renderToast({ message: 'Successfully deleted gist!' });
     } catch (error) {
@@ -257,22 +241,18 @@ export class GistActionButton extends React.Component<
    */
   public async performGistAction(): Promise<void> {
     const { gistId } = this.props.appState;
-    const { actionType } = this.state;
 
-    if (gistId) {
-      switch (actionType) {
-        case GistActionType.publish:
-          await this.handlePublish();
-          break;
-        case GistActionType.update:
-          await this.handleUpdate();
-          break;
-        case GistActionType.delete:
-          await this.handleDelete();
-          break;
-      }
-    } else {
-      await this.handlePublish();
+    const actionType = gistId ? this.state.actionType : GistActionType.publish;
+
+    switch (actionType) {
+      case GistActionType.delete:
+        return this.handleDelete();
+
+      case GistActionType.publish:
+        return this.handlePublish();
+
+      case GistActionType.update:
+        return this.handleUpdate();
     }
   }
 
@@ -425,27 +405,13 @@ export class GistActionButton extends React.Component<
   }
 
   private renderToast = (toast: IToastProps) => {
-    this.toaster.show(toast);
+    this.toaster?.show(toast);
   };
 
   private gistFilesList = (values: EditorValues) => {
-    const { customMosaics } = this.props.appState;
-    const getSuffix = (name: string) => path.parse(name).ext.slice(1);
-
-    const filesList = {};
-
-    // Add files for default editors.
-    for (const editor of DEFAULT_EDITORS) {
-      filesList[editor] = {
-        content: values[editor] || EMPTY_EDITOR_CONTENT[getSuffix(editor)],
-      };
-    }
-
-    // Add files for any custom editors created by the user.
-    for (const mosaic in customMosaics) {
-      filesList[mosaic] = { content: values[mosaic] };
-    }
-
-    return filesList;
+    const ids = [...DEFAULT_EDITORS, ...Object.keys(values)];
+    return Object.fromEntries(
+      ids.map((id) => [id, { content: values[id] || getEmptyContent(id) }]),
+    );
   };
 }

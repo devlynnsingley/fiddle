@@ -1,19 +1,12 @@
 import * as fs from 'fs-extra';
-import semver from 'semver';
 import { action, autorun, computed, observable, when } from 'mobx';
-import { MosaicNode } from 'react-mosaic-component';
 
 import {
-  DEFAULT_EDITORS,
-  ALL_MOSAICS,
   BlockableAccelerator,
-  DocsDemoPage,
-  DefaultEditorId,
   ElectronReleaseChannel,
   GenericDialogOptions,
   GenericDialogType,
   GistActionState,
-  MosaicId,
   OutputEntry,
   OutputOptions,
   RunnableVersion,
@@ -21,39 +14,26 @@ import {
   Version,
   VersionSource,
   VersionState,
-  CustomEditorId,
-  EditorId,
 } from '../interfaces';
 import { IpcEvents } from '../ipc-events';
-import { EditorBackup, getEditorBackup } from '../utils/editor-backup';
-import {
-  createMosaicArrangement,
-  getVisibleMosaics,
-} from '../utils/editors-mosaic-arrangement';
 import { getName } from '../utils/get-name';
 import { normalizeVersion } from '../utils/normalize-version';
-import { isEditorBackup, isEditorId, isPanelId } from '../utils/type-checks';
 import { removeBinary, setupBinary } from './binary';
 import { Bisector } from './bisect';
-import { DEFAULT_CLOSED_PANELS, DEFAULT_MOSAIC_ARRANGEMENT } from './constants';
-import { getTemplate, isContentUnchanged } from './content';
-import {
-  getLocalTypePathForVersion,
-  updateEditorTypeDefinitions,
-} from './fetch-types';
+import { EditorMosaic } from './editor-mosaic';
+import { getTemplate } from './content';
 import { ipcRendererManager } from './ipc';
-import { activateTheme } from './themes';
 
-import { waitForEditorsToMount } from '../utils/editor-mounted';
 import { sortVersions } from '../utils/sort-versions';
 import { IPackageManager } from './npm';
 import {
   addLocalVersion,
+  fetchVersions,
   getDefaultVersion,
   getElectronVersions,
-  getOldestSupportedVersion,
+  getOldestSupportedMajor,
   getReleaseChannel,
-  getUpdatedElectronVersions,
+  makeRunnable,
   saveLocalVersions,
 } from './versions';
 
@@ -64,6 +44,10 @@ import {
  * @class AppState
  */
 export class AppState {
+  private readonly timeFmt = new Intl.DateTimeFormat([], {
+    timeStyle: 'medium',
+  });
+
   // -- Persisted settings ------------------
   @observable public theme: string | null = localStorage.getItem('theme');
   @observable public gitHubAvatarUrl: string | null = localStorage.getItem(
@@ -109,6 +93,10 @@ export class AppState {
     (this.retrieve('executionFlags') as Array<string>) === null
       ? []
       : (this.retrieve('executionFlags') as Array<string>);
+  @observable public environmentVariables: Array<string> =
+    (this.retrieve('environmentVariables') as Array<string>) === null
+      ? []
+      : (this.retrieve('environmentVariables') as Array<string>);
   @observable public packageManager: IPackageManager =
     (localStorage.getItem('packageManager') as IPackageManager) || 'npm';
   @observable public acceleratorsToBlock: Array<BlockableAccelerator> =
@@ -127,40 +115,31 @@ export class AppState {
     wantsInput: false,
     placeholder: '',
   };
-  @observable public customMosaics: CustomEditorId[] = [];
+  @observable public readonly editorMosaic = new EditorMosaic();
   @observable public genericDialogLastResult: boolean | null = null;
   @observable public genericDialogLastInput: string | null = null;
-  @observable
-  public mosaicArrangement: MosaicNode<MosaicId> | null = DEFAULT_MOSAIC_ARRANGEMENT;
   @observable public templateName: string | undefined;
-  @observable public currentDocsDemoPage: DocsDemoPage = DocsDemoPage.DEFAULT;
-  @observable public localTypeWatcher: fs.FSWatcher | undefined;
   @observable public Bisector: Bisector | undefined;
 
   @observable public activeGistAction: GistActionState = GistActionState.none;
   @observable public isRunning = false;
   @observable public isAutoBisecting = false;
   @observable public isInstallingModules = false;
-  @observable public isUnsaved: boolean;
   @observable public isUpdatingElectronVersions = false;
   @observable public isQuitting = false;
 
   // -- Various "isShowing" settings ------------------
+  @observable public isAddVersionDialogShowing = false;
   @observable public isBisectCommandShowing: boolean;
+  @observable public isBisectDialogShowing = false;
   @observable public isConsoleShowing = false;
-  @observable public isTokenDialogShowing = false;
   @observable public isGenericDialogShowing = false;
   @observable public isSettingsShowing = false;
-  @observable public isBisectDialogShowing = false;
-  @observable public isAddVersionDialogShowing = false;
   @observable public isThemeDialogShowing = false;
+  @observable public isTokenDialogShowing = false;
   @observable public isTourShowing = !localStorage.getItem('hasShownTour');
 
   // -- Editor Values stored when we close the editor ------------------
-  @observable public closedPanels: Partial<
-    Record<MosaicId, EditorBackup | true>
-  > = DEFAULT_CLOSED_PANELS;
-
   private outputBuffer = '';
   private name: string;
   private readonly defaultVersion: string;
@@ -171,6 +150,7 @@ export class AppState {
     this.downloadVersion = this.downloadVersion.bind(this);
     this.pushError = this.pushError.bind(this);
     this.pushOutput = this.pushOutput.bind(this);
+    this.flushOutput = this.flushOutput.bind(this);
     this.getVersion = this.getVersion.bind(this);
     this.hasVersion = this.hasVersion.bind(this);
     this.removeVersion = this.removeVersion.bind(this);
@@ -184,8 +164,8 @@ export class AppState {
     this.toggleSettings = this.toggleSettings.bind(this);
     this.toggleBisectDialog = this.toggleBisectDialog.bind(this);
     this.updateElectronVersions = this.updateElectronVersions.bind(this);
-    this.resetEditorLayout = this.resetEditorLayout.bind(this);
     this.setIsQuitting = this.setIsQuitting.bind(this);
+    this.setShowMeMenu = this.setShowMeMenu.bind(this);
     this.addAcceleratorToBlock = this.addAcceleratorToBlock.bind(this);
     this.removeAcceleratorToBlock = this.removeAcceleratorToBlock.bind(this);
     this.hideChannels = this.hideChannels.bind(this);
@@ -240,55 +220,6 @@ export class AppState {
     autorun(() => this.save('packageManager', this.packageManager ?? 'npm'));
     autorun(() => this.save('acceleratorsToBlock', this.acceleratorsToBlock));
 
-    autorun(async () => {
-      if (typeof this.isUnsaved === 'undefined') return;
-
-      if (this.isUnsaved) {
-        window.onbeforeunload = () => {
-          ipcRendererManager.send(IpcEvents.SHOW_INACTIVE);
-          this.setGenericDialogOptions({
-            type: GenericDialogType.warning,
-            label: `The current Fiddle is unsaved. Do you want to exit anyway?`,
-            ok: 'Exit',
-          });
-
-          this.isGenericDialogShowing = true;
-
-          // We'll wait until the warning dialog was closed
-          when(() => !this.isGenericDialogShowing).then(() => {
-            const closeConfirmed = this.genericDialogLastResult;
-            // The user confirmed, let's close for real.
-            if (closeConfirmed) {
-              // isQuitting checks if we're trying to quit the app
-              // or just close the window
-              if (this.isQuitting) {
-                ipcRendererManager.send(IpcEvents.CONFIRM_QUIT);
-              }
-              window.onbeforeunload = null;
-              window.close();
-            }
-          });
-
-          // return value doesn't matter, we just want to cancel the event
-          return false;
-        };
-      } else {
-        window.onbeforeunload = null;
-
-        // set up editor listeners to verify if unsaved
-        const ids = DEFAULT_EDITORS.filter(
-          (id) => id in window.ElectronFiddle.editors,
-        );
-        await waitForEditorsToMount(ids);
-        for (const editor of Object.values(window.ElectronFiddle.editors)) {
-          const disposable = editor!.onDidChangeModelContent(() => {
-            this.isUnsaved = true;
-            disposable.dispose();
-          });
-        }
-      }
-    });
-
     // Update our known versions
     this.updateElectronVersions();
 
@@ -307,7 +238,8 @@ export class AppState {
    * @returns {string} the title, e.g. appname, fiddle name, state
    */
   @computed get title(): string {
-    const { gistId, isUnsaved, localPath, templateName } = this;
+    const { gistId, localPath, templateName } = this;
+    const { isEdited } = this.editorMosaic;
     const tokens = [];
 
     if (localPath) {
@@ -318,7 +250,7 @@ export class AppState {
       tokens.push(`gist.github.com/${gistId}`);
     }
 
-    if (isUnsaved) {
+    if (isEdited) {
       tokens.push('Unsaved');
     }
 
@@ -349,7 +281,7 @@ export class AppState {
       showUndownloadedVersions,
       versions,
     } = this;
-    const oldest = semver.parse(getOldestSupportedVersion());
+    const oldest = getOldestSupportedMajor();
 
     const filter = (ver: RunnableVersion) =>
       ver &&
@@ -358,7 +290,7 @@ export class AppState {
         ver.state === VersionState.ready) &&
       (showObsoleteVersions ||
         !oldest ||
-        oldest.compareMain(ver.version) <= 0) &&
+        oldest <= Number.parseInt(ver.version)) &&
       channelsToShow.includes(getReleaseChannel(ver));
 
     return sortVersions(Object.values(versions).filter(filter));
@@ -374,7 +306,11 @@ export class AppState {
     this.isUpdatingElectronVersions = true;
 
     try {
-      this.addNewVersions(await getUpdatedElectronVersions());
+      this.addNewVersions(
+        (await fetchVersions())
+          .filter((ver) => !(ver.version in this.versions))
+          .map((ver) => makeRunnable(ver)),
+      );
     } catch (error) {
       console.warn(`State: Could not update Electron versions`, error);
     }
@@ -428,14 +364,6 @@ export class AppState {
     this.isTokenDialogShowing = !this.isTokenDialogShowing;
   }
 
-  @action public toggleGenericDialog() {
-    this.isGenericDialogShowing = !this.isGenericDialogShowing;
-
-    if (this.isGenericDialogShowing) {
-      this.genericDialogLastResult = null;
-    }
-  }
-
   @action public toggleBisectDialog() {
     this.isBisectDialogShowing = !this.isBisectDialogShowing;
   }
@@ -463,18 +391,7 @@ export class AppState {
 
   @action public setTheme(fileName?: string) {
     this.theme = fileName || '';
-    activateTheme(undefined, undefined, fileName);
-    window.ElectronFiddle.app.loadTheme();
-  }
-
-  @action public setGenericDialogOptions(opts: GenericDialogOptions) {
-    this.genericDialogOptions = {
-      ok: 'Okay',
-      cancel: 'Cancel',
-      wantsInput: false,
-      placeholder: '',
-      ...opts,
-    };
+    window.ElectronFiddle.app.loadTheme(this.theme);
   }
 
   @action public addLocalVersion(input: Version) {
@@ -482,7 +399,7 @@ export class AppState {
     this.addNewVersions(getElectronVersions());
   }
 
-  @action private addNewVersions(versions: RunnableVersion[]) {
+  @action public addNewVersions(versions: RunnableVersion[]) {
     for (const ver of versions) {
       this.versions[ver.version] ||= ver;
     }
@@ -495,25 +412,27 @@ export class AppState {
    * @returns {Promise<void>}
    */
   @action public async removeVersion(ver: RunnableVersion) {
-    const { version } = ver;
-
-    if (ver.state !== VersionState.ready) {
-      console.log(`State: Version ${version} already removed, doing nothing`);
-      return;
-    }
+    const { version, state, source } = ver;
 
     if (ver === this.currentElectronVersion) {
       console.log(`State: Not removing active version ${version}`);
       return;
     }
 
-    // Actually remove
     console.log(`State: Removing Electron ${version}`);
-    if (ver.source === VersionSource.local) {
-      delete this.versions[version];
-      saveLocalVersions(Object.values(this.versions));
+    if (source === VersionSource.local) {
+      if (version in this.versions) {
+        delete this.versions[version];
+        saveLocalVersions(Object.values(this.versions));
+      } else {
+        console.log(`State: Version ${version} already removed, doing nothing`);
+      }
     } else {
-      await removeBinary(ver);
+      if (state === VersionState.ready) {
+        await removeBinary(ver);
+      } else {
+        console.log(`State: Version ${version} already removed, doing nothing`);
+      }
     }
   }
 
@@ -546,56 +465,69 @@ export class AppState {
   }
 
   /**
+   * Private setVersion() helper to test if setVersion(input) would work.
+   *
+   * Returns a RunnableVersion if it would work, or an error string otherwise.
+   */
+  private isVersionUsable(
+    input: string,
+  ): { ver?: RunnableVersion; err?: string } {
+    const ver = this.getVersion(input);
+    if (!ver) {
+      return { err: `Unknown version ${input}` };
+    }
+
+    const { localPath, version } = ver;
+    if (localPath && !fs.existsSync(localPath)) {
+      const err = `Local Electron build missing for version ${version} - please verify it is in the correct location or remove and re-add it.`;
+      return { err };
+    }
+
+    return { ver };
+  }
+
+  /*
+   * Private setVersion() helper to find a usable fallback version.
+   */
+  private findUsableVersion(): RunnableVersion | undefined {
+    return this.versionsToShow.find((ver) => this.isVersionUsable(ver.version));
+  }
+
+  /**
    * Select a version of Electron (and download it if necessary).
    *
    * @param {string} input
    * @returns {Promise<void>}
    */
   @action public async setVersion(input: string) {
-    const ver = this.getVersion(input);
+    // make sure we can  use this version
+    const { err, ver } = this.isVersionUsable(input);
     if (!ver) {
-      console.warn(`State: setVersion() got an unknown version ${input}`);
-      await this.setVersion(this.versionsToShow[0].version);
+      console.warn(`setVersion('${input}') failed: ${err}`);
+      this.showErrorDialog(err!);
+      const fallback = this.findUsableVersion();
+      if (fallback) await this.setVersion(fallback.version);
       return;
     }
 
     const { version } = ver;
     console.log(`State: Switching to Electron ${version}`);
-
-    // Should we update the editor?
-    if (await isContentUnchanged(DefaultEditorId.main, this.version)) {
-      const editorValues = await getTemplate(version);
-
-      const options: SetFiddleOptions = { templateName: version };
-      await window.ElectronFiddle.app.replaceFiddle(editorValues, options);
-    }
-
     this.version = version;
 
-    // Update TypeScript definitions
-    if (ver.source === VersionSource.local) {
-      const typePath = getLocalTypePathForVersion(ver);
-      console.info(
-        `TypeDefs: Watching file for local version ${version} at path ${typePath}`,
-      );
-      try {
-        this.localTypeWatcher = fs.watch(typePath!, async () => {
-          console.info(
-            `TypeDefs: Noticed file change at ${typePath}. Updating editor typedefs.`,
-          );
-          await updateEditorTypeDefinitions(ver);
-        });
-      } catch (err) {
-        console.info('TypeDefs: Unable to start watching.');
+    // If there's no current fiddle,
+    // or if the current fiddle is the previous version's template,
+    // then load the new version's template.
+    const shouldReplace = () =>
+      this.editorMosaic.files.size === 0 || // no current fiddle
+      (this.templateName && !this.editorMosaic.isEdited); // unedited template
+    if (shouldReplace()) {
+      const options: SetFiddleOptions = { templateName: version };
+      const values = await getTemplate(version);
+      // test again just in case something happened while we awaited
+      if (shouldReplace()) {
+        await window.ElectronFiddle.app.replaceFiddle(values, options);
       }
-    } else if (!!this.localTypeWatcher) {
-      console.info(
-        `TypeDefs: Switched to downloaded version ${version}. Unwatching local typedefs.`,
-      );
-      this.localTypeWatcher.close();
-      this.localTypeWatcher = undefined;
     }
-    await updateEditorTypeDefinitions(ver);
 
     // Fetch new binaries, maybe?
     await this.downloadVersion(ver);
@@ -613,6 +545,81 @@ export class AppState {
     this.gitHubName = null;
   }
 
+  @action public async showGenericDialog(
+    opts: GenericDialogOptions,
+  ): Promise<{ confirm: boolean; input: string }> {
+    this.genericDialogLastResult = null;
+    this.genericDialogOptions = opts;
+    this.isGenericDialogShowing = true;
+    await when(() => !this.isGenericDialogShowing);
+    return {
+      confirm: Boolean(this.genericDialogLastResult),
+      input: this.genericDialogLastInput || opts.defaultInput || '',
+    };
+  }
+
+  @action public async showInputDialog(opts: {
+    cancel?: string;
+    defaultInput?: string;
+    label: string | JSX.Element;
+    ok: string;
+    placeholder: string;
+  }): Promise<string | undefined> {
+    const { confirm, input } = await this.showGenericDialog({
+      ...opts,
+      cancel: opts.cancel || 'Cancel',
+      type: GenericDialogType.confirm,
+      wantsInput: true,
+    });
+    return confirm ? input : undefined;
+  }
+
+  @action public async showConfirmDialog(opts: {
+    cancel?: string;
+    label: string | JSX.Element;
+    ok: string;
+  }): Promise<boolean> {
+    const { confirm } = await this.showGenericDialog({
+      ...opts,
+      cancel: opts.cancel || 'Cancel',
+      wantsInput: false,
+      type: GenericDialogType.confirm,
+    });
+    return confirm;
+  }
+
+  @action public async showInfoDialog(
+    label: string | JSX.Element,
+  ): Promise<void> {
+    await this.showGenericDialog({
+      label,
+      ok: 'Close',
+      type: GenericDialogType.success,
+      wantsInput: false,
+    });
+  }
+
+  @action public async showErrorDialog(
+    label: string | JSX.Element,
+  ): Promise<void> {
+    await this.showGenericDialog({
+      label,
+      ok: 'Close',
+      type: GenericDialogType.warning,
+      wantsInput: false,
+    });
+  }
+
+  /**
+   * Ensure that any buffered console output is
+   * printed before a running Fiddle is stopped.
+   *
+   * @returns {void}
+   */
+  @action public flushOutput(): void {
+    this.pushOutput('\r\n', { bypassBuffer: false });
+  }
+
   /**
    * Push output to the application's state. Accepts a buffer or a string as input,
    * attaches a timestamp, and pushes into the store.
@@ -626,12 +633,11 @@ export class AppState {
     let strData = data.toString();
     const { isNotPre, bypassBuffer } = options;
 
-    // TODO: This drops the first part of the buffer... is that fully expected?
     if (process.platform === 'win32' && bypassBuffer === false) {
       this.outputBuffer += strData;
       strData = this.outputBuffer;
       const parts = strData.split('\r\n');
-      for (let partIndex = 0; partIndex < parts.length; partIndex += 1) {
+      for (let partIndex = 0; partIndex < parts.length; partIndex++) {
         const part = parts[partIndex];
         if (partIndex === parts.length - 1) {
           this.outputBuffer = part;
@@ -648,9 +654,9 @@ export class AppState {
     if (strData === 'For help see https://nodejs.org/en/docs/inspector') return;
 
     const entry: OutputEntry = {
-      timestamp: Date.now(),
-      text: strData.trim(),
       isNotPre,
+      text: strData.trim(),
+      timeString: this.timeFmt.format(new Date()),
     };
     ipcRendererManager.send(IpcEvents.OUTPUT_ENTRY, entry);
     this.output.push(entry);
@@ -668,104 +674,8 @@ export class AppState {
     console.warn(error);
   }
 
-  /**
-   * Sets the editor value for a given editor. Deletes the value after
-   * accessing it.
-   *
-   * @param {EditorId} id
-   */
-  @action public getAndRemoveEditorValueBackup(
-    id: EditorId,
-  ): EditorBackup | null {
-    const value = this.closedPanels[id];
-
-    if (isEditorBackup(value)) {
-      delete this.closedPanels[id];
-      return value;
-    }
-
-    return null;
-  }
-
-  @action public async setVisibleMosaics(visible: Array<MosaicId>) {
-    const { editors } = window.ElectronFiddle;
-    const currentlyVisible = getVisibleMosaics(this.mosaicArrangement);
-
-    for (const id of ALL_MOSAICS) {
-      if (!visible.includes(id) && currentlyVisible.includes(id)) {
-        this.closedPanels[id] = isEditorId(id, this.customMosaics)
-          ? getEditorBackup(id)
-          : true;
-
-        // if we have backup, remove active editor
-        delete editors[id];
-      }
-
-      // Remove the backup for panels now. Editors will remove their
-      // backup once the data has been loaded.
-      if (
-        isPanelId(id) &&
-        visible.includes(id) &&
-        !currentlyVisible.includes(id)
-      ) {
-        delete this.closedPanels[id];
-      }
-    }
-
-    const updatedArrangement = createMosaicArrangement(visible);
-    console.log(
-      `State: Setting visible mosaic panels`,
-      visible,
-      updatedArrangement,
-    );
-
-    this.mosaicArrangement = updatedArrangement;
-
-    // after the mosaicArrangement loads, we want to wait for the Mosaic editors to
-    // mount to ensure that we can load content into the editors as soon as they're
-    // declared visible.
-
-    await waitForEditorsToMount(visible);
-  }
-
-  /**
-   * Hides the panel for a given MosaicId.
-   *
-   * @param {MosaicId} id
-   */
-  @action public hideAndBackupMosaic(id: MosaicId) {
-    const currentlyVisible = getVisibleMosaics(this.mosaicArrangement);
-    this.setVisibleMosaics(currentlyVisible.filter((v) => v !== id));
-  }
-
-  /**
-   * Removes the panel for a given custom MosaicId.
-   *
-   * @param {MosaicId} id
-   */
-  @action public removeCustomMosaic(id: MosaicId) {
-    this.hideAndBackupMosaic(id);
-    delete window.ElectronFiddle.editors[id];
-    this.customMosaics = this.customMosaics.filter((mosaic) => mosaic !== id);
-  }
-
-  /**
-   * Shows the editor value for a given editor.
-   *
-   * @param {MosaicId} id
-   */
-  @action public showMosaic(id: MosaicId) {
-    const currentlyVisible = getVisibleMosaics(this.mosaicArrangement);
-    this.setVisibleMosaics([...currentlyVisible, id]);
-  }
-
-  /**
-   * Resets editor view to default layout.
-   *
-   *
-   */
-  @action public resetEditorLayout() {
-    this.mosaicArrangement = DEFAULT_MOSAIC_ARRANGEMENT;
+  @action public async setShowMeMenu() {
+    ipcRendererManager.send(IpcEvents.SET_SHOW_ME_TEMPLATE, this.templateName);
   }
 
   @action public async addAcceleratorToBlock(acc: BlockableAccelerator) {
@@ -787,24 +697,30 @@ export class AppState {
       ]);
     }
   }
+
   /**
-   * Resets the view, optionally with certain view flags enabled.
-   *
-   * @param {Record<string, boolean>} [additionalOptions]
-   * @memberof AppState
+   * Show or close secondary windows such as settings and dialogs.
    */
-  @action private resetView(additionalOptions: Record<string, boolean> = {}) {
-    this.isAddVersionDialogShowing = false;
-    this.isConsoleShowing = false;
-    this.isSettingsShowing = false;
-    this.isThemeDialogShowing = false;
-    this.isTokenDialogShowing = false;
-    this.isTourShowing = false;
-
-    for (const [key, val] of Object.entries(additionalOptions)) {
-      this[key] = val;
-    }
-
+  @action public resetView(
+    opts: {
+      isAddVersionDialogShowing?: boolean;
+      isBisectDialogShowing?: boolean;
+      isConsoleShowing?: boolean;
+      isGenericDialogShowing?: boolean;
+      isSettingsShowing?: boolean;
+      isThemeDialogShowing?: boolean;
+      isTokenDialogShowing?: boolean;
+      isTourShowing?: boolean;
+    } = {},
+  ) {
+    this.isAddVersionDialogShowing = Boolean(opts.isAddVersionDialogShowing);
+    this.isBisectDialogShowing = Boolean(opts.isBisectDialogShowing);
+    this.isConsoleShowing = Boolean(opts.isConsoleShowing);
+    this.isGenericDialogShowing = Boolean(opts.isGenericDialogShowing);
+    this.isSettingsShowing = Boolean(opts.isSettingsShowing);
+    this.isThemeDialogShowing = Boolean(opts.isThemeDialogShowing);
+    this.isTokenDialogShowing = Boolean(opts.isTokenDialogShowing);
+    this.isTourShowing = Boolean(opts.isTourShowing);
     this.setPageHash();
   }
 

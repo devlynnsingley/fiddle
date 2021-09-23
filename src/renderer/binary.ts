@@ -9,7 +9,6 @@ import {
   VersionState,
 } from '../interfaces';
 import { USER_DATA_PATH } from './constants';
-import { removeTypeDefsForVersion } from './fetch-types';
 import { download as electronDownload } from '@electron/get';
 
 // versions that are currently being downloaded
@@ -85,8 +84,8 @@ async function downloadBinary(ver: RunnableVersion): Promise<void> {
     // Ensure the target path is empty
     await fs.emptyDir(extractPath);
 
-    const electronFiles = await unzip(zipPath, extractPath);
-    console.log(`Binary: Unzipped ${version}`, electronFiles);
+    await unzip(zipPath, extractPath);
+    console.log(`Binary: Unzipped ${version}`);
     ver.state = VersionState.ready;
   } catch (error) {
     console.warn(`Binary: Failure while unzipping ${version}`, error);
@@ -139,7 +138,7 @@ export async function removeBinary(ver: RunnableVersion) {
   };
 
   const typeDefsCleaner = async () => {
-    await removeTypeDefsForVersion(version);
+    window.ElectronFiddle.app.electronTypes.uncache(ver);
   };
 
   await rerunner(binaryCleaner);

@@ -1,4 +1,5 @@
-import { DefaultEditorId, EditorValues } from '../interfaces';
+import { EditorValues, MAIN_JS } from '../interfaces';
+import { isSupportedFile } from './editor-utils';
 
 import * as fs from 'fs-extra';
 import * as path from 'path';
@@ -10,50 +11,33 @@ import * as path from 'path';
  * @returns {Promise<EditorValues>} the loaded Fiddle
  */
 export async function readFiddle(folder: string): Promise<EditorValues> {
-  const customMosaics: Record<string, string> = {};
-  const defaultMosaics: EditorValues = {
-    [DefaultEditorId.css]: '',
-    [DefaultEditorId.html]: '',
-    [DefaultEditorId.main]: '',
-    [DefaultEditorId.preload]: '',
-    [DefaultEditorId.renderer]: '',
-  };
+  const got: EditorValues = {};
 
-  const hits: string[] = [];
-  const misses = new Set(Object.values(DefaultEditorId));
+  try {
+    const names = (await fs.readdir(folder)).filter(isSupportedFile);
+    const values = await Promise.allSettled(
+      names.map((name) => fs.readFile(path.join(folder, name), 'utf8')),
+    );
 
-  const isValidEditorName = (name: string) =>
-    /^[^\s]+\.(css|html|js)$/i.test(name);
+    for (let i = 0; i < names.length; ++i) {
+      const name = names[i];
+      const value = values[i];
 
-  const tryRead = (name: string) => {
-    try {
-      const filename = path.join(folder, name);
-      const content = fs.readFileSync(filename, 'utf-8');
-      hits.push(name);
-      misses.delete(name as DefaultEditorId);
-      return content || '';
-    } catch (error) {
-      console.warn(`Could not read file ${name}:`, error);
-      return '';
-    }
-  };
-
-  if (!fs.existsSync(folder)) {
-    console.warn(`readFiddle(): "${folder}" does not exist`);
-  } else {
-    for (const file of fs.readdirSync(folder)) {
-      if (Object.values(DefaultEditorId).includes(file as DefaultEditorId)) {
-        defaultMosaics[file] = tryRead(file);
-      } else if (isValidEditorName(file)) {
-        customMosaics[file] = tryRead(file);
+      if (value.status === 'fulfilled') {
+        got[name] = value.value || '';
+      } else {
+        console.warn(`Could not read file ${name}:`, value.reason);
+        got[name] = '';
       }
     }
+  } catch (err) {
+    console.warn(`Unable to read "${folder}": ${err.toString()}`);
   }
 
-  console.log(`Got Fiddle from "${folder}".
-Found Default Mosaics: ${hits.sort().join(', ')}
-Found Custom Mosaics: ${Object.keys(customMosaics).sort().join(', ')}
-Missed: ${[...misses].sort().join(', ')}`);
+  if (!(MAIN_JS in got)) {
+    got[MAIN_JS] = '';
+  }
 
-  return { ...defaultMosaics, ...customMosaics };
+  console.log(`Got Fiddle from "${folder}". Found:`, Object.keys(got).sort());
+  return got;
 }

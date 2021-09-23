@@ -1,6 +1,6 @@
-import decomment from 'decomment';
+import stripComments from 'strip-comments';
 
-export default class MockWorker {
+export default class WorkerMock {
   public onmessage: (msg: any) => any;
   public onmessageerror: () => any;
   public onerror: () => any;
@@ -14,7 +14,7 @@ export default class MockWorker {
     };
   }
 
-  public postMessage(input: string) {
-    this.onmessage({ data: decomment(input) });
+  public postMessage(code: string) {
+    this.onmessage({ data: stripComments(code) });
   }
 }

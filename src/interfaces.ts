@@ -33,15 +33,6 @@ export interface Version {
   localPath?: string;
 }
 
-export interface EditorValues {
-  [DefaultEditorId.main]: string;
-  [DefaultEditorId.renderer]: string;
-  [DefaultEditorId.html]: string;
-  [DefaultEditorId.preload]: string;
-  [DefaultEditorId.css]: string;
-  PACKAGE_NAME?: string;
-}
-
 export enum RunResult {
   SUCCESS = 'success', // exit code === 0
   FAILURE = 'failure', // ran, but exit code !== 0
@@ -66,11 +57,17 @@ export interface SetFiddleOptions {
   gistId?: string;
 }
 
+export interface SetUpMenuOptions {
+  acceleratorsToBlock?: BlockableAccelerator[] | null;
+  activeTemplate?: string | null;
+}
+
 export interface SetupRequest {
   fiddle?: SetFiddleOptions;
   version?: string;
   showChannels: ElectronReleaseChannel[];
   hideChannels: ElectronReleaseChannel[];
+  useObsolete?: boolean;
 }
 
 export interface BisectRequest {
@@ -85,7 +82,7 @@ export interface TestRequest {
 
 export interface OutputEntry {
   text: string;
-  timestamp: number;
+  timeString: string;
   isNotPre?: boolean;
 }
 
@@ -96,9 +93,10 @@ export interface OutputOptions {
 
 export interface GenericDialogOptions {
   type: GenericDialogType;
-  ok?: string;
+  ok: string;
   cancel?: string;
-  wantsInput?: boolean;
+  wantsInput: boolean;
+  defaultInput?: string;
   label: string | JSX.Element;
   placeholder?: string;
 }
@@ -113,6 +111,10 @@ export const enum GenericDialogType {
   'success' = 'success',
 }
 
+export type EditorId = `${string}.${'js' | 'html' | 'css'}`;
+
+export type EditorValues = Record<EditorId, string>;
+
 // Default Editors
 export enum DefaultEditorId {
   'main' = 'main.js',
@@ -122,20 +124,6 @@ export enum DefaultEditorId {
   'css' = 'styles.css',
 }
 
-export type CustomEditorId = Exclude<
-  `${string}.${'js' | 'html' | 'css'}`,
-  DefaultEditorId
->;
-
-export type EditorId = DefaultEditorId | CustomEditorId;
-
-// Panels that can show up as a mosaic
-export const enum PanelId {
-  'docsDemo' = 'docsDemo',
-}
-
-export type MosaicId = DefaultEditorId | CustomEditorId | PanelId;
-
 export const DEFAULT_EDITORS = [
   DefaultEditorId.main,
   DefaultEditorId.renderer,
@@ -144,18 +132,13 @@ export const DEFAULT_EDITORS = [
   DefaultEditorId.css,
 ];
 
+// main.js gets special treatment: it is required as the entry point
+// when we run fiddles or create a package.json to package fiddles.
+export const MAIN_JS = DefaultEditorId.main;
+
 export const PACKAGE_NAME = 'package.json';
 
-export const ALL_PANELS = [PanelId.docsDemo];
-
-export const ALL_MOSAICS = [...DEFAULT_EDITORS, ...ALL_PANELS] as MosaicId[];
-
 export type ArrowPosition = 'top' | 'left' | 'bottom' | 'right';
-
-export const enum DocsDemoPage {
-  DEFAULT = 'DEFAULT',
-  DEMO_APP = 'DEMO_APP',
-}
 
 export const enum BlockableAccelerator {
   save = 'save',

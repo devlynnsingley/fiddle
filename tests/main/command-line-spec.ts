@@ -1,6 +1,5 @@
 // use a stable-sorting stringify for comparing expected & actual payloads
 import stringify from 'json-stable-stringify';
-import { app } from 'electron';
 
 import {
   ElectronReleaseChannel,
@@ -31,6 +30,15 @@ describe('processCommandLine()', () => {
     expect(ipcMainManager.send).not.toHaveBeenCalled();
   });
 
+  it('exits with 2 if called with invalid parameters', async () => {
+    const argv = [...ARGV_PREFIX, 'test', '--this-option-is-unknown=true'];
+    const exitCode = 2;
+    const exitSpy = jest.spyOn(process, 'exit').mockImplementation();
+    await processCommandLine(argv);
+    expect(exitSpy).toHaveBeenCalledWith(exitCode);
+    exitSpy.mockReset();
+  });
+
   function expectSendCalledOnceWith(event: IpcEvents, payload: string) {
     const send = ipcMainManager.send as jest.Mock;
     expect(send).toHaveBeenCalledTimes(1);
@@ -41,6 +49,19 @@ describe('processCommandLine()', () => {
     expect(params.length).toBe(1);
     const [request] = params;
     expect(stringify(request)).toBe(payload);
+  }
+
+  async function expectLogConfigOptionWorks(argv: string[]) {
+    argv = [...argv, '--log-config'];
+    const consoleSpy = jest.spyOn(console, 'log').mockImplementation();
+    await processCommandLine(argv);
+    expect(consoleSpy).toHaveBeenCalledWith(
+      expect.stringMatching('electron-fiddle started'),
+    );
+    expect(consoleSpy).toHaveBeenCalledWith(
+      expect.stringMatching(`platform: ${process.platform}`),
+    );
+    consoleSpy.mockReset();
   }
 
   describe('test', () => {
@@ -68,12 +89,16 @@ describe('processCommandLine()', () => {
     it('handles a --fiddle option that is unrecognizable', async () => {
       const FIDDLE = '✨🤪💎';
       const argv = [...ARGV, '--fiddle', FIDDLE];
-      const expected = `Unrecognized Fiddle "${FIDDLE}"`;
-      const spy = jest.spyOn(console, 'error').mockImplementation();
+      const consoleExpected = `Unrecognized Fiddle "${FIDDLE}"`;
+      const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
+      const exitExpected = 2;
+      const exitSpy = jest.spyOn(process, 'exit').mockImplementation();
       await processCommandLine(argv);
       expect(ipcMainManager.send).not.toHaveBeenCalled();
-      expect(spy).toHaveBeenCalledWith(expected);
-      spy.mockReset();
+      expect(consoleSpy).toHaveBeenCalledWith(consoleExpected);
+      expect(exitSpy).toHaveBeenCalledWith(exitExpected);
+      consoleSpy.mockReset();
+      exitSpy.mockReset();
     });
 
     it('handles a --version option', async () => {
@@ -82,6 +107,10 @@ describe('processCommandLine()', () => {
       const expected = `{"setup":{"fiddle":${DEFAULT_FIDDLE},"hideChannels":[],"showChannels":[],"version":"${VERSION}"}}`;
       await processCommandLine(argv);
       expectTestCalledOnceWith(expected);
+    });
+
+    it('handles a --log-config option', async () => {
+      await expectLogConfigOptionWorks([...ARGV, '--log-config']);
     });
   });
 
@@ -97,6 +126,13 @@ describe('processCommandLine()', () => {
     it('sends a bisect request', async () => {
       const argv = [...ARGV, GOOD, BAD];
       const expected = `{"badVersion":"${BAD}","goodVersion":"${GOOD}","setup":{"fiddle":${DEFAULT_FIDDLE},"hideChannels":[],"showChannels":[]}}`;
+      await processCommandLine(argv);
+      expectBisectCalledOnceWith(expected);
+    });
+
+    it('handles a --full option', async () => {
+      const argv = [...ARGV, GOOD, BAD, '--full'];
+      const expected = `{"badVersion":"${BAD}","goodVersion":"${GOOD}","setup":{"fiddle":${DEFAULT_FIDDLE},"hideChannels":[],"showChannels":["${ElectronReleaseChannel.beta}","${ElectronReleaseChannel.nightly}","${ElectronReleaseChannel.stable}"],"useObsolete":true}}`;
       await processCommandLine(argv);
       expectBisectCalledOnceWith(expected);
     });
@@ -129,6 +165,39 @@ describe('processCommandLine()', () => {
       expectBisectCalledOnceWith(expected);
     });
 
+    it('handles a --obsolete option', async () => {
+      const argv = [...ARGV, GOOD, BAD, '--obsolete'];
+      const expected = `{"badVersion":"${BAD}","goodVersion":"${GOOD}","setup":{"fiddle":${DEFAULT_FIDDLE},"hideChannels":[],"showChannels":[],"useObsolete":true}}`;
+      await processCommandLine(argv);
+      expectBisectCalledOnceWith(expected);
+    });
+
+    it('handles a --no-obsolete option', async () => {
+      const argv = [...ARGV, GOOD, BAD, '--no-obsolete'];
+      const expected = `{"badVersion":"${BAD}","goodVersion":"${GOOD}","setup":{"fiddle":${DEFAULT_FIDDLE},"hideChannels":[],"showChannels":[],"useObsolete":false}}`;
+      await processCommandLine(argv);
+      expectBisectCalledOnceWith(expected);
+    });
+
+    it('handles a --fiddle option that is unrecognizable', async () => {
+      const FIDDLE = '✨🤪💎';
+      const argv = [...ARGV, GOOD, BAD, '--fiddle', FIDDLE];
+      const consoleExpected = `Unrecognized Fiddle "${FIDDLE}"`;
+      const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
+      const exitExpected = 2;
+      const exitSpy = jest.spyOn(process, 'exit').mockImplementation();
+      await processCommandLine(argv);
+      expect(ipcMainManager.send).not.toHaveBeenCalled();
+      expect(consoleSpy).toHaveBeenCalledWith(consoleExpected);
+      expect(exitSpy).toHaveBeenCalledWith(exitExpected);
+      consoleSpy.mockReset();
+      exitSpy.mockReset();
+    });
+
+    it('handles a --log-config option', async () => {
+      await expectLogConfigOptionWorks([...ARGV, GOOD, BAD, '--log-config']);
+    });
+
     describe(`watches for ${IpcEvents.TASK_DONE} events`, () => {
       async function expectDoneCausesExit(result: RunResult, exitCode: number) {
         const argv = [...ARGV, GOOD, BAD];
@@ -137,7 +206,7 @@ describe('processCommandLine()', () => {
           ipcMainManager.emit(IpcEvents.TASK_DONE, fakeEvent, result);
         });
         await processCommandLine(argv);
-        expect(app.exit).toHaveBeenCalledWith(exitCode);
+        expect(process.exit).toHaveBeenCalledWith(exitCode);
       }
 
       it(`exits with 0 on ${RunResult.SUCCESS}`, async () => {
@@ -153,13 +222,13 @@ describe('processCommandLine()', () => {
       });
 
       it('sends output messages to the console', async () => {
-        const now = Date.now();
+        const timeString = new Date().toLocaleTimeString();
         const text = 'asieoniezi';
-        const expected = `[${new Date(now).toLocaleTimeString()}] ${text}`;
+        const expected = `[${timeString}] ${text}`;
         const spy = jest.spyOn(console, 'log').mockReturnValue();
 
         const fakeEvent = {};
-        const entry: OutputEntry = { text, timestamp: now };
+        const entry: OutputEntry = { text, timeString };
         (ipcMainManager.send as jest.Mock).mockImplementationOnce(() => {
           ipcMainManager.emit(IpcEvents.OUTPUT_ENTRY, fakeEvent, entry);
         });

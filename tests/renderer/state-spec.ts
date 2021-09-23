@@ -1,44 +1,30 @@
-import * as MonacoType from 'monaco-editor';
-
+import { reaction } from 'mobx';
 import {
-  ALL_MOSAICS,
   BlockableAccelerator,
-  DefaultEditorId,
   ElectronReleaseChannel,
   GenericDialogType,
-  PanelId,
+  MAIN_JS,
   RunnableVersion,
   Version,
   VersionSource,
   VersionState,
 } from '../../src/interfaces';
-import { IpcEvents } from '../../src/ipc-events';
 import {
   getVersionState,
   removeBinary,
   setupBinary,
 } from '../../src/renderer/binary';
 import { Bisector } from '../../src/renderer/bisect';
-import {
-  DEFAULT_MOSAIC_ARRANGEMENT,
-  SORTED_EDITORS,
-} from '../../src/renderer/constants';
-import { getTemplate, isContentUnchanged } from '../../src/renderer/content';
+import { getTemplate } from '../../src/renderer/content';
 import { ipcRendererManager } from '../../src/renderer/ipc';
 import { AppState } from '../../src/renderer/state';
-import { getElectronVersions } from '../../src/renderer/versions';
-import {
-  getUpdatedElectronVersions,
-  saveLocalVersions,
-} from '../../src/renderer/versions';
-import { createMosaicArrangement } from '../../src/utils/editors-mosaic-arrangement';
-import { waitFor } from '../../src/utils/wait-for';
+import { getElectronVersions, makeRunnable } from '../../src/renderer/versions';
+import { fetchVersions, saveLocalVersions } from '../../src/renderer/versions';
 import { getName } from '../../src/utils/get-name';
-import { MockVersions } from '../mocks/electron-versions';
+import { VersionsMock, createEditorValues } from '../mocks/mocks';
 import { overridePlatform, resetPlatform } from '../utils';
 
 jest.mock('../../src/renderer/content', () => ({
-  isContentUnchanged: jest.fn(),
   getTemplate: jest.fn(),
 }));
 jest.mock('../../src/renderer/binary', () => ({
@@ -46,27 +32,25 @@ jest.mock('../../src/renderer/binary', () => ({
   setupBinary: jest.fn(),
   getVersionState: jest.fn().mockImplementation((v) => v.state),
 }));
-jest.mock('../../src/renderer/fetch-types', () => ({
-  getLocalTypePathForVersion: jest.fn(),
-  updateEditorTypeDefinitions: jest.fn(),
-}));
 jest.mock('../../src/renderer/versions', () => {
   const { getReleaseChannel } = jest.requireActual(
     '../../src/renderer/versions',
   );
-  const { MockVersions } = require('../mocks/electron-versions');
-  const { mockVersionsArray } = new MockVersions();
+  const { VersionsMock } = require('../mocks/electron-versions');
+  const { mockVersionsArray } = new VersionsMock();
 
   return {
     addLocalVersion: jest.fn(),
+    fetchVersions: jest.fn(mockVersionsArray),
     getDefaultVersion: () => '2.0.2',
     getElectronVersions: jest.fn(),
-    getOldestSupportedVersion: jest.fn(),
+    getOldestSupportedMajor: jest.fn(),
     getReleaseChannel,
-    getUpdatedElectronVersions: jest.fn().mockResolvedValue(mockVersionsArray),
+    makeRunnable: jest.fn((v) => v),
     saveLocalVersions: jest.fn(),
   };
 });
+
 jest.mock('../../src/utils/get-name', () => ({
   getName: jest.fn(),
 }));
@@ -78,11 +62,9 @@ describe('AppState', () => {
   let mockVersionsArray: RunnableVersion[];
 
   beforeEach(() => {
-    ({ mockVersions, mockVersionsArray } = new MockVersions());
+    ({ mockVersions, mockVersionsArray } = new VersionsMock());
 
-    (getUpdatedElectronVersions as jest.Mock).mockResolvedValue(
-      mockVersionsArray,
-    );
+    (fetchVersions as jest.Mock).mockResolvedValue(mockVersionsArray);
     (getVersionState as jest.Mock).mockImplementation((v) => v.state);
 
     appState = new AppState(mockVersionsArray);
@@ -94,95 +76,25 @@ describe('AppState', () => {
     expect(appState).toBeTruthy();
   });
 
-  describe('isUnsaved autorun handler', () => {
-    it('can close the window if user accepts the dialog', (done) => {
-      window.close = jest.fn();
-      appState.isUnsaved = true;
-      expect(window.onbeforeunload).toBeTruthy();
-
-      const result = window.onbeforeunload!(undefined as any);
-      expect(result).toBe(false);
-      expect(appState.isGenericDialogShowing).toBe(true);
-
-      appState.genericDialogLastResult = true;
-      appState.isGenericDialogShowing = false;
-      process.nextTick(() => {
-        expect(window.close).toHaveBeenCalled();
-        done();
-      });
-    });
-
-    it('can close the app after user accepts dialog', (done) => {
-      window.close = jest.fn();
-      appState.isUnsaved = true;
-      expect(window.onbeforeunload).toBeTruthy();
-
-      const result = window.onbeforeunload!(undefined as any);
-      expect(result).toBe(false);
-      expect(appState.isGenericDialogShowing).toBe(true);
-
-      appState.genericDialogLastResult = true;
-      appState.isGenericDialogShowing = false;
-      appState.isQuitting = true;
-      process.nextTick(() => {
-        expect(window.close).toHaveBeenCalledTimes(1);
-        expect(ipcRendererManager.send).toHaveBeenCalledWith<any>(
-          IpcEvents.CONFIRM_QUIT,
-        );
-        done();
-      });
-    });
-
-    it('takes no action if user cancels the dialog', (done) => {
-      window.close = jest.fn();
-      appState.isUnsaved = true;
-      expect(window.onbeforeunload).toBeTruthy();
-
-      const result = window.onbeforeunload!(undefined as any);
-      expect(result).toBe(false);
-      expect(appState.isGenericDialogShowing).toBe(true);
-
-      appState.genericDialogLastResult = false;
-      appState.isGenericDialogShowing = false;
-      appState.isQuitting = true;
-      process.nextTick(() => {
-        expect(window.close).toHaveBeenCalledTimes(0);
-        expect(ipcRendererManager.send).not.toHaveBeenCalledWith<any>(
-          IpcEvents.CONFIRM_QUIT,
-        );
-        done();
-      });
-    });
-
-    it('sets the onDidChangeModelContent handler if saved', async (done) => {
-      // confirm that setting appState.isUnsaved to false
-      // causes a new change-model-content callback to be installed
-      appState.isUnsaved = false;
-      const fn = window.ElectronFiddle.editors!['renderer.js']!
-        .onDidChangeModelContent;
-      await waitFor(() => (fn as jest.Mock).mock.calls.length > 0);
-      expect(window.onbeforeunload).toBe(null);
-      expect(fn as jest.Mock).toHaveBeenCalledTimes(1);
-
-      // confirm that invoking the new callback sets appState.isUnsaved to true
-      const call = (fn as jest.Mock).mock.calls[0];
-      const callback = call[0];
-      callback();
-      expect(appState.isUnsaved).toBe(true);
-
-      done();
-    });
-  });
-
   describe('updateElectronVersions()', () => {
     it('handles errors gracefully', async () => {
-      (getUpdatedElectronVersions as jest.Mock).mockImplementationOnce(
-        async () => {
-          throw new Error('Bwap-bwap');
-        },
-      );
+      (fetchVersions as jest.Mock).mockRejectedValue(new Error('Bwap-bwap'));
+      await appState.updateElectronVersions();
+    });
+
+    it('adds new versions', async () => {
+      const version = '100.0.0';
+      const ver: Version = { version };
+
+      (fetchVersions as jest.Mock).mockResolvedValue([ver]);
+      (makeRunnable as jest.Mock).mockImplementation((v: unknown) => v);
+
+      const oldCount = Object.keys(appState.versions).length;
 
       await appState.updateElectronVersions();
+      const newCount = Object.keys(appState.versions).length;
+      expect(newCount).toBe(oldCount + 1);
+      expect(appState.versions[version]).toStrictEqual(ver);
     });
   });
 
@@ -281,19 +193,6 @@ describe('AppState', () => {
       expect(appState.isAddVersionDialogShowing).toBe(true);
       appState.toggleAddVersionDialog();
       expect(appState.isAddVersionDialogShowing).toBe(false);
-    });
-  });
-
-  describe('toggleGenericDialog()', () => {
-    it('toggles the warning dialog', () => {
-      appState.genericDialogLastResult = true;
-
-      appState.toggleGenericDialog();
-      expect(appState.isGenericDialogShowing).toBe(true);
-      expect(appState.genericDialogLastResult).toBe(null);
-
-      appState.toggleGenericDialog();
-      expect(appState.isGenericDialogShowing).toBe(false);
     });
   });
 
@@ -478,18 +377,67 @@ describe('AppState', () => {
       expect(appState.downloadVersion).toHaveBeenCalled();
     });
 
-    it('possibly updates the editors', async () => {
-      appState.versions['1.0.0'] = { version: '1.0.0' } as any;
-      (isContentUnchanged as jest.Mock).mockReturnValueOnce(true);
-      (getTemplate as jest.Mock).mockResolvedValueOnce({
-        defaultMosaics: {},
-        customMosaics: {},
+    describe('loads the template for the new version', () => {
+      let newVersion: string;
+      let oldVersion: string;
+      let replaceSpy: ReturnType<typeof jest.spyOn>;
+      const nextValues = createEditorValues();
+
+      beforeEach(() => {
+        // pick some version that differs from the current version
+        oldVersion = appState.version;
+        newVersion = Object.keys(appState.versions)
+          .filter((version) => version !== oldVersion)
+          .shift()!;
+        expect(newVersion).not.toStrictEqual(oldVersion);
+        expect(newVersion).toBeTruthy();
+
+        // spy on app.replaceFiddle
+        replaceSpy = jest.spyOn(
+          (window as any).ElectronFiddle.app,
+          'replaceFiddle',
+        );
+        replaceSpy.mockReset();
+
+        (getTemplate as jest.Mock).mockResolvedValue(nextValues);
       });
 
-      await appState.setVersion('v1.0.0');
+      it('if there is no current fiddle', async () => {
+        // setup: current fiddle is empty
+        appState.editorMosaic.set({});
 
-      expect(getTemplate).toHaveBeenCalledTimes(1);
-      expect(window.ElectronFiddle.app.replaceFiddle).toHaveBeenCalledTimes(1);
+        await appState.setVersion(newVersion);
+        expect(replaceSpy).toHaveBeenCalledTimes(1);
+        const templateName = newVersion;
+        expect(replaceSpy).toHaveBeenCalledWith(nextValues, { templateName });
+      });
+
+      it('if the current fiddle is an unedited template', async () => {
+        appState.templateName = oldVersion;
+        appState.editorMosaic.set({ [MAIN_JS]: '// content' });
+        appState.editorMosaic.isEdited = false;
+
+        await appState.setVersion(newVersion);
+        const templateName = newVersion;
+        expect(replaceSpy).toHaveBeenCalledWith(nextValues, { templateName });
+      });
+
+      it('but not if the current fiddle is edited', async () => {
+        appState.editorMosaic.set({ [MAIN_JS]: '// content' });
+        appState.editorMosaic.isEdited = true;
+        appState.templateName = oldVersion;
+
+        await appState.setVersion(newVersion);
+        expect(replaceSpy).not.toHaveBeenCalled();
+      });
+
+      it('but not if the current fiddle is not a template', async () => {
+        appState.editorMosaic.set({ [MAIN_JS]: '// content' });
+        appState.localPath = '/some/path/to/a/fiddle';
+
+        await appState.setVersion(newVersion);
+        expect(replaceSpy).not.toHaveBeenCalled();
+      });
     });
 
     it('updates typescript definitions', async () => {
@@ -516,19 +464,162 @@ describe('AppState', () => {
     });
   });
 
-  describe('setGenericDialogOptions()', () => {
-    it('sets the warning dialog options', () => {
-      appState.setGenericDialogOptions({
-        type: GenericDialogType.warning,
-        label: 'foo',
+  describe('dialog helpers', () => {
+    let dispose: any;
+
+    afterEach(() => {
+      if (dispose) dispose();
+    });
+
+    function registerDialogHandler(input: string | null, result: boolean) {
+      dispose = reaction(
+        () => appState.isGenericDialogShowing,
+        () => {
+          appState.genericDialogLastInput = input;
+          appState.genericDialogLastResult = result;
+          appState.isGenericDialogShowing = false;
+        },
+      );
+    }
+
+    const Input = 'Entropy requires no maintenance.';
+    const DefaultInput = 'default input';
+
+    const Opts = {
+      label: 'foo',
+      ok: 'Close',
+      type: GenericDialogType.warning,
+      wantsInput: false,
+    } as const;
+
+    describe('showGenericDialog()', () => {
+      it('shows a dialog', async () => {
+        const promise = appState.showGenericDialog(Opts);
+        expect(appState.isGenericDialogShowing).toBe(true);
+        appState.isGenericDialogShowing = false;
+        await promise;
       });
-      expect(appState.genericDialogOptions).toEqual({
-        type: GenericDialogType.warning,
-        label: 'foo',
-        ok: 'Okay',
-        placeholder: '',
-        cancel: 'Cancel',
-        wantsInput: false,
+
+      it('resolves when the dialog is dismissed', async () => {
+        registerDialogHandler(Input, true);
+        const promise = appState.showGenericDialog(Opts);
+        await promise;
+        expect(appState).toHaveProperty('isGenericDialogShowing', false);
+      });
+
+      it('returns true if confirmed by user', async () => {
+        registerDialogHandler(Input, true);
+        const result = await appState.showGenericDialog(Opts);
+        expect(result).toHaveProperty('confirm', true);
+      });
+
+      it('returns false if rejected by user', async () => {
+        registerDialogHandler(Input, false);
+        const result = await appState.showGenericDialog(Opts);
+        expect(result).toHaveProperty('confirm', false);
+      });
+
+      it('returns the user-inputted text', async () => {
+        registerDialogHandler(Input, true);
+        const result = await appState.showGenericDialog({
+          ...Opts,
+          defaultInput: DefaultInput,
+        });
+        expect(result).toHaveProperty('input', Input);
+      });
+
+      it('returns defaultInput as a fallback', async () => {
+        registerDialogHandler(null, true);
+        const result = await appState.showGenericDialog({
+          ...Opts,
+          defaultInput: DefaultInput,
+        });
+        expect(result).toHaveProperty('input', DefaultInput);
+      });
+
+      it('returns an empty string as a last resort', async () => {
+        registerDialogHandler(null, true);
+        const result = await appState.showGenericDialog(Opts);
+        expect(result).toHaveProperty('input', '');
+      });
+    });
+
+    describe('showInputDialog', () => {
+      const input = 'fnord' as const;
+      const inputOpts = {
+        label: 'label',
+        ok: 'Close',
+        placeholder: 'Placeholder',
+      } as const;
+
+      it('returns text when confirmed', async () => {
+        appState.showGenericDialog = jest.fn().mockResolvedValueOnce({
+          confirm: true,
+          input,
+        });
+        const result = await appState.showInputDialog(inputOpts);
+        expect(result).toBe(input);
+      });
+
+      it('returns undefined when canceled', async () => {
+        appState.showGenericDialog = jest.fn().mockResolvedValueOnce({
+          confirm: false,
+          input,
+        });
+        const result = await appState.showInputDialog(inputOpts);
+        expect(result).toBeUndefined();
+      });
+    });
+
+    describe('showConfirmDialog', () => {
+      const label = 'Do you want to confirm this dialog?';
+      async function testConfirmDialog(confirm: boolean) {
+        appState.showGenericDialog = jest.fn().mockResolvedValueOnce({
+          confirm,
+          input: undefined,
+        });
+        const result = await appState.showConfirmDialog({
+          label,
+          ok: 'Confirm',
+        });
+        expect(result).toBe(confirm);
+      }
+
+      it('returns true when confirmed', () => testConfirmDialog(true));
+      it('returns false when canceled', () => testConfirmDialog(false));
+    });
+
+    describe('showErrorDialog', () => {
+      const label = 'This is an error message.';
+
+      it('shows an error dialog', async () => {
+        appState.showGenericDialog = jest.fn().mockResolvedValueOnce({
+          confirm: true,
+        });
+        await appState.showErrorDialog(label);
+        expect(appState.showGenericDialog).toHaveBeenCalledWith({
+          label,
+          ok: 'Close',
+          type: GenericDialogType.warning,
+          wantsInput: false,
+        });
+      });
+    });
+
+    describe('showInfoDialog', () => {
+      const label = 'This is an informational message.';
+
+      it('shows an error dialog', async () => {
+        appState.showGenericDialog = jest.fn().mockResolvedValueOnce({
+          confirm: true,
+        });
+        await appState.showInfoDialog(label);
+        expect(appState.showGenericDialog).toHaveBeenCalledWith({
+          label,
+          ok: 'Close',
+          type: GenericDialogType.success,
+          wantsInput: false,
+        });
       });
     });
   });
@@ -571,7 +662,7 @@ describe('AppState', () => {
       appState.pushOutput(Buffer.from('hi'));
 
       expect(appState.output[1].text).toBe('hi');
-      expect(appState.output[1].timestamp).toBeTruthy();
+      expect(appState.output[1].timeString).toBeTruthy();
     });
 
     it('ignores the "Debuggeer listening on..." output', () => {
@@ -602,125 +693,6 @@ describe('AppState', () => {
 
       expect(appState.output[1].text).toBe('⚠️ Bwap bwap. Error encountered:');
       expect(appState.output[2].text).toBe('Error: Bwap bwap');
-    });
-  });
-
-  describe('getAndRemoveEditorValueBackup()', () => {
-    it('returns null if there is no backup', () => {
-      const result = appState.getAndRemoveEditorValueBackup(
-        DefaultEditorId.main,
-      );
-      expect(result).toEqual(null);
-    });
-
-    it('returns and deletes a backup if there is one', () => {
-      appState.closedPanels[DefaultEditorId.main] = { testBackup: true } as any;
-      const result = appState.getAndRemoveEditorValueBackup(
-        DefaultEditorId.main,
-      );
-      expect(result).toEqual({ testBackup: true });
-      expect(appState.closedPanels[DefaultEditorId.main]).toBeUndefined();
-    });
-  });
-
-  describe('setVisibleMosaics()', () => {
-    it('updates the visible editors and creates a backup', async () => {
-      appState.mosaicArrangement = createMosaicArrangement(ALL_MOSAICS);
-      appState.closedPanels = {};
-      appState.customMosaics = [];
-      await appState.setVisibleMosaics([DefaultEditorId.main]);
-
-      // we just need to mock something truthy here
-      window.ElectronFiddle.editors[
-        DefaultEditorId.main
-      ] = {} as MonacoType.editor.IStandaloneCodeEditor;
-
-      expect(appState.mosaicArrangement).toEqual(DefaultEditorId.main);
-      expect(appState.closedPanels[DefaultEditorId.renderer]).toBeTruthy();
-      expect(appState.closedPanels[DefaultEditorId.html]).toBeTruthy();
-      expect(appState.closedPanels[DefaultEditorId.main]).toBeUndefined();
-    });
-
-    it('removes the backup for a non-editor right away', async () => {
-      appState.closedPanels = {};
-      appState.closedPanels[PanelId.docsDemo] = true;
-
-      for (const mosaic of ALL_MOSAICS) {
-        // we just need to mock something truthy here
-        window.ElectronFiddle.editors[
-          mosaic
-        ] = {} as MonacoType.editor.IStandaloneCodeEditor;
-      }
-
-      await appState.setVisibleMosaics(ALL_MOSAICS);
-
-      expect(appState.closedPanels[PanelId.docsDemo]).toBeUndefined();
-    });
-  });
-
-  describe('removeCustomMosaic()', () => {
-    it('removes a given custom mosaic', () => {
-      const file = 'file.js';
-      appState.mosaicArrangement = DEFAULT_MOSAIC_ARRANGEMENT;
-      appState.customMosaics = [file];
-
-      appState.removeCustomMosaic(file);
-
-      expect(appState.customMosaics).toEqual([]);
-    });
-  });
-
-  describe('hideAndBackupMosaic()', () => {
-    it('hides a given editor and creates a backup', () => {
-      appState.mosaicArrangement = DEFAULT_MOSAIC_ARRANGEMENT;
-      appState.closedPanels = {};
-      appState.hideAndBackupMosaic(SORTED_EDITORS[0]);
-
-      expect(appState.mosaicArrangement).toEqual({
-        direction: 'row',
-        first: SORTED_EDITORS[1],
-        second: {
-          direction: 'column',
-          first: SORTED_EDITORS[2],
-          second: SORTED_EDITORS[3],
-        },
-      });
-      expect(appState.closedPanels[DefaultEditorId.main]).toBeTruthy();
-      expect(appState.closedPanels[DefaultEditorId.renderer]).toBeUndefined();
-      expect(appState.closedPanels[DefaultEditorId.html]).toBeUndefined();
-    });
-  });
-
-  describe('showMosaic()', () => {
-    it('shows a given editor', () => {
-      appState.mosaicArrangement = DefaultEditorId.main;
-      appState.showMosaic(DefaultEditorId.html);
-
-      expect(appState.mosaicArrangement).toEqual({
-        direction: 'row',
-        first: DefaultEditorId.main,
-        second: DefaultEditorId.html,
-      });
-    });
-  });
-
-  describe('resetEditorLayout()', () => {
-    it('Puts editors in default arrangement', () => {
-      appState.hideAndBackupMosaic(SORTED_EDITORS[0]);
-
-      expect(appState.mosaicArrangement).toEqual({
-        direction: 'row',
-        first: SORTED_EDITORS[1],
-        second: {
-          direction: 'column',
-          first: SORTED_EDITORS[2],
-          second: SORTED_EDITORS[3],
-        },
-      });
-
-      appState.resetEditorLayout();
-
-      expect(appState.mosaicArrangement).toEqual(DEFAULT_MOSAIC_ARRANGEMENT);
     });
   });
 
@@ -791,7 +763,7 @@ describe('AppState', () => {
 
     it('flags unsaved fiddles', () => {
       const expected = `${APPNAME} - Unsaved`;
-      appState.isUnsaved = true;
+      appState.editorMosaic.isEdited = true;
       const actual = appState.title;
       expect(actual).toBe(expected);
     });

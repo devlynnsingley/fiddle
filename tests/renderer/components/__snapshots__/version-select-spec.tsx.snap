@@ -22,8 +22,47 @@ exports[`VersionSelect component renders 1`] = `
 <Blueprint3.Select
   disabled={false}
   filterable={true}
-  itemPredicate={[Function]}
+  itemListPredicate={[Function]}
   itemRenderer={[Function]}
+  items={
+    Array [
+      Object {
+        "source": "remote",
+        "state": "ready",
+        "version": "2.0.3",
+      },
+      Object {
+        "source": "remote",
+        "state": "ready",
+        "version": "2.0.2",
+      },
+      Object {
+        "source": "remote",
+        "state": "ready",
+        "version": "2.0.1",
+      },
+      Object {
+        "source": "remote",
+        "state": "ready",
+        "version": "2.0.0",
+      },
+      Object {
+        "source": "remote",
+        "state": "ready",
+        "version": "1.8.7",
+      },
+      Object {
+        "source": "remote",
+        "state": "unknown",
+        "version": "1.0.0",
+      },
+      Object {
+        "source": "remote",
+        "state": "unknown",
+        "version": "3.0.0-unsupported",
+      },
+    ]
+  }
   noResults={
     <Blueprint3.MenuItem
       disabled={true}
@@ -39,6 +78,7 @@ exports[`VersionSelect component renders 1`] = `
     className="version-chooser"
     disabled={false}
     icon="cloud"
+    onContextMenu={[Function]}
     text="Electron v1.0.0"
   />
 </Blueprint3.Select>

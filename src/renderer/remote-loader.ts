@@ -1,32 +1,34 @@
-import { Octokit } from '@octokit/rest';
-import { when } from 'mobx';
 import {
-  CustomEditorId,
-  DefaultEditorId,
-  DEFAULT_EDITORS,
   EditorValues,
   ElectronReleaseChannel,
-  GenericDialogType,
   PACKAGE_NAME,
+  VersionSource,
+  VersionState,
 } from '../interfaces';
 import { getOctokit } from '../utils/octokit';
 import { ELECTRON_ORG, ELECTRON_REPO } from './constants';
 import { getTemplate } from './content';
 import { AppState } from './state';
 import { getReleaseChannel } from './versions';
+import { isKnownFile, isSupportedFile } from '../utils/editor-utils';
 
 export class RemoteLoader {
   constructor(private readonly appState: AppState) {
-    this.loadFiddleFromElectronExample.bind(this);
-    this.loadFiddleFromGist.bind(this);
-    this.verifyRemoteLoad.bind(this);
-    this.verifyReleaseChannelEnabled.bind(this);
-    this.fetchExampleAndLoad.bind(this);
-    this.fetchGistAndLoad.bind(this);
-    this.setElectronVersionWithRef.bind(this);
-    this.getPackageVersionFromRef.bind(this);
-    this.handleLoadingSuccess.bind(this);
-    this.handleLoadingFailed.bind(this);
+    for (const name of [
+      'fetchExampleAndLoad',
+      'fetchGistAndLoad',
+      'getPackageVersionFromRef',
+      'handleLoadingFailed',
+      'handleLoadingSuccess',
+      'loadFiddleFromElectronExample',
+      'loadFiddleFromGist',
+      'setElectronVersionWithRef',
+      'verifyCreateCustomEditor',
+      'verifyReleaseChannelEnabled',
+      'verifyRemoteLoad',
+    ]) {
+      this[name] = this[name].bind(this);
+    }
   }
 
   public async loadFiddleFromElectronExample(
@@ -84,9 +86,7 @@ export class RemoteLoader {
           continue;
         }
 
-        if (
-          Object.values(DefaultEditorId).includes(child.name as DefaultEditorId)
-        ) {
+        if (isSupportedFile(child.name)) {
           loaders.push(
             fetch(child.download_url)
               .then((r) => r.text())
@@ -106,25 +106,6 @@ export class RemoteLoader {
   }
 
   /**
-   * Get data from a gist. If it doesn't exist, return an empty string.
-   *
-   * @param {Octokit.Response<Octokit.GistsGetResponse>} gist
-   * @param {string} name
-   * @returns {string}
-   * @memberof RemoteLoader
-   */
-  public getContentOrEmpty(
-    gist: Octokit.Response<Octokit.GistsGetResponse>,
-    name: string,
-  ): string {
-    try {
-      return gist.data.files[name].content;
-    } catch (error) {
-      return '';
-    }
-  }
-
-  /**
    * Load a fiddle
    *
    * @returns {Promise<boolean>}
@@ -134,25 +115,14 @@ export class RemoteLoader {
     try {
       const octo = await getOctokit(this.appState);
       const gist = await octo.gists.get({ gist_id: gistId });
-      const values: Partial<EditorValues> = {};
+      const values: EditorValues = {};
 
-      // Add values for all default editors.
-      for (const editor of DEFAULT_EDITORS) {
-        values[editor] = this.getContentOrEmpty(gist, editor);
-      }
-
-      // Fetch any custom editor files that the user may have created in the gist.
-      const maybeCustomEditors = Object.keys(gist.data.files).filter(
-        (file) =>
-          !Object.values(DefaultEditorId).includes(file as DefaultEditorId),
-      );
-
-      // If it's a custom editor explicitly request permission before creation.
-      for (const mosaic of maybeCustomEditors) {
-        const verified = await this.verifyCreateCustomEditor(mosaic);
-        if (verified) {
-          values[mosaic] = this.getContentOrEmpty(gist, mosaic);
-          this.appState.customMosaics.push(mosaic as CustomEditorId);
+      for (const [id, data] of Object.entries(gist.data.files)) {
+        if (!isSupportedFile(id)) {
+          continue;
+        }
+        if (isKnownFile(id) || (await this.verifyCreateCustomEditor(id))) {
+          values[id] = data.content;
         }
       }
 
@@ -166,10 +136,22 @@ export class RemoteLoader {
     const version = await this.getPackageVersionFromRef(ref);
 
     if (!this.appState.hasVersion(version)) {
-      this.handleLoadingFailed(
-        new Error('Version of Electron in example not supported'),
-      );
-      return false;
+      const versionToDownload = {
+        source: VersionSource.remote,
+        state: VersionState.unknown,
+        version,
+      };
+
+      try {
+        this.appState.addNewVersions([versionToDownload]);
+        await this.appState.downloadVersion(versionToDownload);
+      } catch {
+        await this.appState.removeVersion(versionToDownload);
+        this.handleLoadingFailed(
+          new Error(`Failed to download Electron version ${version}`),
+        );
+        return false;
+      }
     }
 
     // check if version is part of release channel
@@ -216,57 +198,44 @@ export class RemoteLoader {
     }
   }
 
-  public async verifyCreateCustomEditor(editorName: string): Promise<boolean> {
-    this.appState.setGenericDialogOptions({
-      type: GenericDialogType.confirm,
-      label: `Do you want to create a custom editor with name: ${editorName}?`,
+  public verifyCreateCustomEditor(editorName: string): Promise<boolean> {
+    return this.appState.showConfirmDialog({
       cancel: 'Skip',
+      label: `Do you want to create a custom editor with name: ${editorName}?`,
+      ok: 'Create',
     });
-
-    this.appState.isGenericDialogShowing = true;
-    await when(() => !this.appState.isGenericDialogShowing);
-
-    return !!this.appState.genericDialogLastResult;
   }
 
   /**
-   * Verifies from the user that we should be loading this fiddle
+   * Verifies from the user that we should be loading this fiddle.
    *
-   * @param what What are we loading from (gist, example, etc.)
+   * @param {string} what What are we loading from (gist, example, etc.)
    */
-  public async verifyRemoteLoad(what: string): Promise<boolean> {
-    this.appState.setGenericDialogOptions({
-      type: GenericDialogType.confirm,
+  public verifyRemoteLoad(what: string): Promise<boolean> {
+    return this.appState.showConfirmDialog({
       label: `Are you sure you want to load this ${what}? Only load and run it if you trust the source.`,
+      ok: 'Load',
     });
-    this.appState.isGenericDialogShowing = true;
-    await when(() => !this.appState.isGenericDialogShowing);
-
-    return !!this.appState.genericDialogLastResult;
   }
 
-  public async verifyReleaseChannelEnabled(channel: string): Promise<boolean> {
-    this.appState.setGenericDialogOptions({
-      type: GenericDialogType.warning,
+  public verifyReleaseChannelEnabled(channel: string): Promise<boolean> {
+    return this.appState.showConfirmDialog({
       label: `You're loading an example with a version of Electron with an unincluded release
               channel (${channel}). Do you want to enable the release channel to load the
               version of Electron from the example?`,
+      ok: 'Enable',
     });
-    this.appState.isGenericDialogShowing = true;
-    await when(() => !this.appState.isGenericDialogShowing);
-
-    return !!this.appState.genericDialogLastResult;
   }
 
   /**
    * Loading a fiddle from GitHub succeeded, let's move on.
    *
-   * @param {Partial<EditorValues>} values
+   * @param {EditorValues} values
    * @param {string} gistId
    * @returns {boolean}
    */
   private async handleLoadingSuccess(
-    values: Partial<EditorValues>,
+    values: EditorValues,
     gistId: string,
   ): Promise<boolean> {
     await window.ElectronFiddle.app.replaceFiddle(values, { gistId });
@@ -281,21 +250,12 @@ export class RemoteLoader {
    * @returns {boolean}
    */
   private handleLoadingFailed(error: Error): false {
-    if (navigator.onLine) {
-      this.appState.setGenericDialogOptions({
-        type: GenericDialogType.warning,
-        label: `Loading the fiddle failed: ${error}`,
-        cancel: undefined,
-      });
-    } else {
-      this.appState.setGenericDialogOptions({
-        type: GenericDialogType.warning,
-        label: `Loading the fiddle failed. Your computer seems to be offline. Error: ${error}`,
-        cancel: undefined,
-      });
-    }
-
-    this.appState.toggleGenericDialog();
+    const failedLabel = `Loading the fiddle failed: ${error.message}`;
+    this.appState.showErrorDialog(
+      navigator.onLine
+        ? failedLabel
+        : `Your computer seems to be offline. ${failedLabel}`,
+    );
 
     console.warn(`Loading Fiddle failed`, error);
     return false;
