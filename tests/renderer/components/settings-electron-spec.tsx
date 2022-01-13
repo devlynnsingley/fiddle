@@ -9,43 +9,35 @@ import {
 } from '../../../src/interfaces';
 import * as versions from '../../../src/renderer/versions';
 import { ElectronSettings } from '../../../src/renderer/components/settings-electron';
-import { MockVersions } from '../../mocks/electron-versions';
+import { StateMock, VersionsMock } from '../../mocks/mocks';
 
 describe('ElectronSettings component', () => {
-  let store: any;
+  let store: StateMock;
   let mockVersions: Record<string, RunnableVersion>;
   let mockVersionsArray: RunnableVersion[];
 
   beforeEach(() => {
-    ({ mockVersions, mockVersionsArray } = new MockVersions());
+    ({ mockVersions, mockVersionsArray } = new VersionsMock());
+    ({ state: store } = (window as any).ElectronFiddle.app);
 
-    store = {
-      version: '2.0.1',
-      versions: { ...mockVersions },
-      channelsToShow: [
-        ElectronReleaseChannel.stable,
-        ElectronReleaseChannel.beta,
-      ],
-      showUndownloadedVersions: false,
-      downloadVersion: jest.fn(),
-      removeVersion: jest.fn(),
-      updateElectronVersions: jest.fn(),
-      toggleAddVersionDialog: jest.fn(),
-      showChannels: jest.fn(),
-      hideChannels: jest.fn(),
-      versionsToShow: mockVersionsArray,
-    };
+    store.initVersions('2.0.1', { ...mockVersions });
+    store.channelsToShow = [
+      ElectronReleaseChannel.stable,
+      ElectronReleaseChannel.beta,
+    ];
 
     // Render all the states
-    store.versions['2.0.2'].state = 'downloading';
-    store.versions['2.0.1'].state = 'ready';
-    store.versions['1.8.7'].state = 'unknown';
+    let i = 0;
+    store.versionsToShow[i++].state = VersionState.ready;
+    store.versionsToShow[i++].state = VersionState.downloading;
+    store.versionsToShow[i++].state = VersionState.unknown;
+    store.versionsToShow[i++].state = VersionState.unzipping;
   });
 
   it('renders', () => {
     const spy = jest
-      .spyOn(versions, 'getOldestSupportedVersion')
-      .mockReturnValue('9.0.0');
+      .spyOn(versions, 'getOldestSupportedMajor')
+      .mockReturnValue(9);
 
     const moreVersions: RunnableVersion[] = [
       {
@@ -65,7 +57,7 @@ describe('ElectronSettings component', () => {
       store.versionsToShow.unshift(ver);
     }
 
-    const wrapper = shallow(<ElectronSettings appState={store} />);
+    const wrapper = shallow(<ElectronSettings appState={store as any} />);
     expect(wrapper).toMatchSnapshot();
 
     spy.mockRestore();
@@ -84,7 +76,7 @@ describe('ElectronSettings component', () => {
       source: VersionSource.local,
     };
 
-    const wrapper = mount(<ElectronSettings appState={store} />);
+    const wrapper = mount(<ElectronSettings appState={store as any} />);
 
     wrapper
       .find('.electron-versions-table .bp3-button')
@@ -104,7 +96,7 @@ describe('ElectronSettings component', () => {
     store.versions = { version: ver };
     store.versionsToShow = [ver];
 
-    const wrapper = mount(<ElectronSettings appState={store} />);
+    const wrapper = mount(<ElectronSettings appState={store as any} />);
 
     wrapper
       .find('.electron-versions-table .bp3-button')
@@ -114,8 +106,28 @@ describe('ElectronSettings component', () => {
     expect(store.downloadVersion).toHaveBeenCalledTimes(1);
   });
 
+  it('handles missing local versions', () => {
+    const version = '99999.0.0';
+    const ver = {
+      source: VersionSource.local,
+      state: VersionState.unknown,
+      version,
+    };
+    store.versions = { version: ver };
+    store.versionsToShow = [ver];
+
+    const wrapper = mount(<ElectronSettings appState={store as any} />);
+
+    wrapper
+      .find('.electron-versions-table .bp3-button')
+      .first()
+      .simulate('click');
+
+    expect(store.removeVersion).toHaveBeenCalledTimes(1);
+  });
+
   it('handles the deleteAll()', async () => {
-    const wrapper = shallow(<ElectronSettings appState={store} />);
+    const wrapper = shallow(<ElectronSettings appState={store as any} />);
     const instance = wrapper.instance() as any;
     await instance.handleDeleteAll();
 
@@ -123,7 +135,7 @@ describe('ElectronSettings component', () => {
   });
 
   it('handles the downloadAll()', async () => {
-    const wrapper = shallow(<ElectronSettings appState={store} />);
+    const wrapper = shallow(<ElectronSettings appState={store as any} />);
     const instance = wrapper.instance() as any;
     await instance.handleDownloadAll();
 
@@ -132,7 +144,7 @@ describe('ElectronSettings component', () => {
 
   describe('handleDownloadClick()', () => {
     it('kicks off an update of Electron versions', async () => {
-      const wrapper = shallow(<ElectronSettings appState={store} />);
+      const wrapper = shallow(<ElectronSettings appState={store as any} />);
       const instance = wrapper.instance() as any;
       await instance.handleDownloadClick();
 
@@ -142,7 +154,7 @@ describe('ElectronSettings component', () => {
 
   describe('handleAddVersion()', () => {
     it('toggles the add version dialog', () => {
-      const wrapper = shallow(<ElectronSettings appState={store} />);
+      const wrapper = shallow(<ElectronSettings appState={store as any} />);
       const instance = wrapper.instance() as any;
       instance.handleAddVersion();
 
@@ -154,7 +166,7 @@ describe('ElectronSettings component', () => {
     it('toggles remote versions', async () => {
       const id = 'showUndownloadedVersions';
       for (const checked of [true, false]) {
-        const wrapper = shallow(<ElectronSettings appState={store} />);
+        const wrapper = shallow(<ElectronSettings appState={store as any} />);
         const instance = wrapper.instance() as any;
         await instance.handleStateChange({
           currentTarget: { checked, id },
@@ -168,7 +180,7 @@ describe('ElectronSettings component', () => {
     it('toggles obsolete versions', async () => {
       const id = 'showObsoleteVersions';
       for (const checked of [true, false]) {
-        const wrapper = shallow(<ElectronSettings appState={store} />);
+        const wrapper = shallow(<ElectronSettings appState={store as any} />);
         const instance = wrapper.instance() as any;
         await instance.handleShowObsoleteChange({
           currentTarget: { checked, id },
@@ -180,7 +192,7 @@ describe('ElectronSettings component', () => {
 
   describe('handleChannelChange()', () => {
     it('handles a new selection', async () => {
-      const wrapper = shallow(<ElectronSettings appState={store} />);
+      const wrapper = shallow(<ElectronSettings appState={store as any} />);
       store.showChannels.mockImplementation((ids: ElectronReleaseChannel[]) =>
         store.channelsToShow.push(...ids),
       );

@@ -1,12 +1,10 @@
-import { EditorId, EditorValues, VersionSource } from '../interfaces';
-import { EMPTY_EDITOR_CONTENT, USER_DATA_PATH } from './constants';
-import { getElectronVersions } from './versions';
+import { EditorValues } from '../interfaces';
+import { USER_DATA_PATH } from './constants';
+import { isReleasedMajor } from './versions';
 import { readFiddle } from '../utils/read-fiddle';
 
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import * as semver from 'semver';
-import decompress from 'decompress';
 
 // parent directory of all the downloaded template fiddles
 const TEMPLATES_DIR = path.join(USER_DATA_PATH, 'Templates');
@@ -24,7 +22,7 @@ const TEST_TEMPLATE_BRANCH = 'test-template';
  * Ensure we have a fiddle for the specified Electron branch.
  * If we don't have it already, download it from electron-quick-start.
  *
- * @param {string} branch - Electron branchname, e.g. `12-x-y` or `master`
+ * @param {string} branch - Electron branchname, e.g. `12-x-y` or `main`
  * @returns {Promise<string>} Path to the folder where the fiddle is kept
  */
 async function prepareTemplate(branch: string): Promise<string> {
@@ -40,12 +38,22 @@ async function prepareTemplate(branch: string): Promise<string> {
         throw new Error(`${url} ${response.status} ${response.statusText}`);
       }
 
-      const arrayBuffer = await response.arrayBuffer();
-      await fs.ensureDir(TEMPLATES_DIR);
-      console.log(`Content: ${branch} unzipping template`);
-      await decompress(Buffer.from(arrayBuffer), TEMPLATES_DIR);
+      // save it to a tempfile
+      const buffer = Buffer.from(await response.arrayBuffer());
+      const { tmpNameSync } = await import('tmp');
+      const tempfile = tmpNameSync({ template: 'electron-fiddle-XXXXXX.zip' });
+      console.log(`Content: ${branch} saving template to "${tempfile}"`);
+      await fs.writeFile(tempfile, buffer, { encoding: 'utf8' });
 
-      console.log(`Content: ${branch} finished unzipping`);
+      // unzip it from the tempfile
+      console.log(`Content: ${branch} unzipping template`);
+      await fs.ensureDir(TEMPLATES_DIR);
+      const { default: extract } = await import('extract-zip');
+      await extract(tempfile, { dir: TEMPLATES_DIR });
+
+      // cleanup
+      console.log(`Content: ${branch} unzipped; removing "${tempfile}"`);
+      await fs.remove(tempfile);
     }
   } catch (err) {
     folder = STATIC_TEMPLATE_DIR;
@@ -60,7 +68,7 @@ const templateCache: Record<string, Promise<EditorValues>> = {};
 /**
  * Get a cached copy of the Electron branch's fiddle.
  *
- * @param {string} branch - Electron branchname, e.g. `12-x-y` or `master`
+ * @param {string} branch - Electron branchname, e.g. `12-x-y` or `main`
  * @returns {Promise<EditorValues>}
  */
 function getQuickStart(branch: string): Promise<EditorValues> {
@@ -85,73 +93,14 @@ export function getTestTemplate(): Promise<EditorValues> {
 }
 
 /**
- * Helper to check if this version is from a released major branch.
- *
- * This way when we have a local version of Electron like '999.0.0'
- * we'll know to not try & download 999-x-y.zip from GitHub :D
- *
- * @param {semver.SemVer} version - Electron version, e.g. 12.0.0
- * @returns {boolean} true if major version is a known release
- */
-function isReleasedMajor(version: semver.SemVer) {
-  const newestRelease = getElectronVersions()
-    .filter((version) => version.source === VersionSource.remote)
-    .map((version) => semver.parse(version.version))
-    .filter((version) => !!version)
-    .reduce((acc, cur) => (acc && acc.compare(cur!) > 0 ? acc : cur));
-  return newestRelease && version.major <= newestRelease.major;
-}
-
-/**
  * Get a cached copy of the fiddle for the specified Electron version.
  *
  * @param {string} version - Electron version, e.g. 12.0.0
  * @returns {Promise<EditorValues>}
  */
 export function getTemplate(version: string): Promise<EditorValues> {
-  const sem = semver.parse(version);
-  return sem && isReleasedMajor(sem)
-    ? getQuickStart(`${sem.major}-x-y`)
+  const major = Number.parseInt(version);
+  return major && isReleasedMajor(major)
+    ? getQuickStart(`${major}-x-y`)
     : readFiddle(STATIC_TEMPLATE_DIR);
-}
-
-/**
- * Returns expected content for a given name.
- *
- * @export
- * @param {EditorId} name
- * @param {string} version
- * @returns {Promise<string>}
- */
-export async function getContent(
-  name: EditorId,
-  version: string,
-): Promise<string> {
-  const mosaics = await getTemplate(version);
-
-  if (mosaics?.[name]) return mosaics[name]!;
-
-  const extension = path.parse(name).ext.slice(1);
-  return EMPTY_EDITOR_CONTENT[extension];
-}
-
-/**
- * Did the content change?
- *
- * @param {EditorId} name
- * @param {string} version - Electron version, e.g. 12.0.0
- * @returns {Promise<boolean>}
- */
-export async function isContentUnchanged(
-  name: EditorId,
-  version: string,
-): Promise<boolean> {
-  const { ElectronFiddle: fiddle } = window;
-  if (!fiddle || !fiddle.app) return false;
-
-  const values = await fiddle.app.getEditorValues({
-    include: false,
-  });
-
-  return values[name] === (await getContent(name, version));
 }

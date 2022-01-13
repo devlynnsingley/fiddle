@@ -1,6 +1,6 @@
 import { EventEmitter } from 'events';
 
-export class MockWebContents extends EventEmitter {
+export class WebContentsMock extends EventEmitter {
   public static fromId = jest.fn();
   public static getAllWebContents = jest.fn();
   public static getFocusedWebContents = jest.fn();
@@ -73,6 +73,7 @@ export class MockWebContents extends EventEmitter {
   public setSize = jest.fn();
   public setUserAgent = jest.fn();
   public setVisualZoomLevelLimits = jest.fn();
+  public setWindowOpenHandler = jest.fn();
   public setWebRTCIPHandlingPolicy = jest.fn();
   public setZoomFactor = jest.fn();
   public setZoomLevel = jest.fn();

@@ -15,13 +15,14 @@ export let browserWindows: Array<BrowserWindow | null> = [];
  */
 export function getMainWindowOptions(): Electron.BrowserWindowConstructorOptions {
   return {
-    width: 1200,
+    width: 1400,
     height: 900,
     minHeight: 600,
     minWidth: 600,
     titleBarStyle: process.platform === 'darwin' ? 'hidden' : undefined,
     acceptFirstMouse: true,
     backgroundColor: '#1d2427',
+    show: false,
     webPreferences: {
       webviewTag: false,
       nodeIntegration: true,
@@ -51,15 +52,21 @@ export function createMainWindow(): Electron.BrowserWindow {
     }
   });
 
+  browserWindow.on('focus', () => {
+    if (browserWindow) {
+      ipcMainManager.send(IpcEvents.SET_SHOW_ME_TEMPLATE);
+    }
+  });
+
   browserWindow.on('closed', () => {
     browserWindows = browserWindows.filter((bw) => browserWindow !== bw);
 
     browserWindow = null;
   });
 
-  browserWindow.webContents.on('new-window', (event, url) => {
-    event.preventDefault();
-    shell.openExternal(url);
+  browserWindow.webContents.setWindowOpenHandler((details) => {
+    shell.openExternal(details.url);
+    return { action: 'deny' };
   });
 
   browserWindow.webContents.on('will-navigate', (event, url) => {
@@ -73,7 +80,7 @@ export function createMainWindow(): Electron.BrowserWindow {
     }
   });
 
-  ipcMainManager.handleOnce(IpcEvents.GET_APP_PATHS, () => {
+  ipcMainManager.handle(IpcEvents.GET_APP_PATHS, () => {
     const paths = {};
     const pathsToQuery = [
       'home',

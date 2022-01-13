@@ -7,12 +7,12 @@ import {
   MosaicWindowContext,
 } from 'react-mosaic-component';
 
-import { DocsDemoPage, MosaicId } from '../../interfaces';
+import { EditorId } from '../../interfaces';
 import { AppState } from '../state';
 
 interface ToolbarButtonProps {
   appState: AppState;
-  id: MosaicId;
+  id: EditorId;
 }
 
 abstract class ToolbarButton extends React.PureComponent<ToolbarButtonProps> {
@@ -57,28 +57,8 @@ export class RemoveButton extends ToolbarButton {
    * Create a button that can remove this panel
    */
   public createButton(_mosaicActions: MosaicRootActions<any>) {
-    const onClick = () =>
-      this.props.appState.hideAndBackupMosaic(this.props.id);
+    const onClick = () => this.props.appState.editorMosaic.hide(this.props.id);
 
     return <Button icon="cross" className="bp3-small" onClick={onClick} />;
-  }
-}
-
-export class DocsDemoGoHomeButton extends ToolbarButton {
-  /**
-   * Create a button that can remove this panel
-   */
-  public createButton(_mosaicActions: MosaicRootActions<any>) {
-    const onClick = () =>
-      (this.props.appState.currentDocsDemoPage = DocsDemoPage.DEFAULT);
-
-    return (
-      <Button
-        icon="home"
-        className="bp3-small"
-        onClick={onClick}
-        text="Overview"
-      />
-    );
   }
 }

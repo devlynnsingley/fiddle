@@ -68,8 +68,14 @@ const handlePotentialProtocolLaunch = (url: string) => {
   }
 };
 
+const isProtocolString = (arg: string) => arg.startsWith(`${PROTOCOL}://`);
+
+export const findProtocolArg = (argv: string[]) => {
+  return argv.find((arg) => isProtocolString(arg));
+};
+
 const scanArgv = (argv: Array<string>) => {
-  const protocolArg = argv.find((arg) => arg.startsWith(`${PROTOCOL}://`));
+  const protocolArg = findProtocolArg(argv);
   if (protocolArg) {
     console.info('Found protocol arg in argv:', protocolArg);
     handlePotentialProtocolLaunch(protocolArg);
@@ -88,9 +94,22 @@ export const listenForProtocolHandler = () => {
 
   app.removeAllListeners('open-url');
   app.on('open-url', (_, url) => {
-    if (url.startsWith(`${PROTOCOL}://`)) {
+    if (isProtocolString(url)) {
       handlePotentialProtocolLaunch(url);
     }
+  });
+
+  app.removeAllListeners('second-instance');
+  app.on('second-instance', (_event, commandLine, _workingDirectory) => {
+    // Someone tried to run a second instance
+    scanArgv(commandLine);
+  });
+
+  app.on('open-file', (_, path) => {
+    if (!path || path.length < 1) {
+      return;
+    }
+    ipcMainManager.send(IpcEvents.FS_OPEN_FIDDLE, [path]);
   });
 
   // pass protocol URL via npm start args in dev mode

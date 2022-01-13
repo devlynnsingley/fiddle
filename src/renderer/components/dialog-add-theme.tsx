@@ -7,7 +7,6 @@ import * as path from 'path';
 import * as React from 'react';
 import { getTheme, THEMES_PATH } from '../themes';
 
-import { GenericDialogType } from '../../../src/interfaces';
 import { AppState } from '../state';
 import { defaultDark, LoadedFiddleTheme } from '../themes-defaults';
 
@@ -49,7 +48,7 @@ export class AddThemeDialog extends React.Component<
    */
   public async onChangeFile(event: React.FormEvent<HTMLInputElement>) {
     const { files } = event.target as any;
-    const file = files?.[0] ;
+    const file = files?.[0];
 
     this.setState({ file });
   }
@@ -78,11 +77,7 @@ export class AddThemeDialog extends React.Component<
       const name = editor.name ? editor.name : file.name;
       await this.createNewThemeFromMonaco(name, newTheme);
     } catch (error) {
-      appState.setGenericDialogOptions({
-        type: GenericDialogType.warning,
-        label: `${error}, please pick a different file.`,
-      });
-      appState.toggleGenericDialog();
+      appState.showErrorDialog(`${error}, please pick a different file.`);
       return;
     }
 
